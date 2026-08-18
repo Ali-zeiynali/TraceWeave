@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+.traceweave
+__pycache__
+.pytest_cache
+.ruff_cache
+*.pyc
+.env
+dist
+build

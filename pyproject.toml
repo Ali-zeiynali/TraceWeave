@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traceweave"
+version = "0.1.0"
+description = "Iterative public-web research with source provenance, resume, and a full-screen terminal UI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "TraceWeave contributors"}]
+keywords = ["research", "osint", "agent", "tui", "search", "provenance"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "ddgs>=9.15,<10",
+  "httpx>=0.27,<1",
+  "pydantic>=2.8,<3",
+  "pydantic-settings>=2.4,<3",
+  "textual>=8.2,<9",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
+  "ruff>=0.8,<1",
+]
+
+[project.scripts]
+traceweave = "traceweave.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"traceweave.prompts" = ["*.txt"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
