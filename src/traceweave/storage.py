@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from traceweave.models import Plan, ResearchSpec, SearchResult, SourceView, utc_now
+from traceweave.models import Plan, ResearchSpec, SearchResult, SourceView, TriageResult, utc_now
 from traceweave.utils import canonicalize_url
 
 SCHEMA = """
@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS runs (
     max_rounds INTEGER NOT NULL,
     max_results_per_query INTEGER NOT NULL,
     fetch_top_per_query INTEGER NOT NULL,
+    max_depth INTEGER NOT NULL DEFAULT 0,
+    max_frontier_pages INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     final_summary TEXT
 );
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS plans (
     focus_json TEXT NOT NULL,
     queries_json TEXT NOT NULL,
     rationale TEXT NOT NULL DEFAULT '',
+    gaps_json TEXT NOT NULL DEFAULT '[]',
+    source_classes_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     UNIQUE(run_id, round_no)
 );
@@ -89,7 +93,146 @@ CREATE TABLE IF NOT EXISTS snapshots (
     raw_path TEXT,
     text_path TEXT,
     extracted_title TEXT NOT NULL DEFAULT '',
+    simhash TEXT NOT NULL DEFAULT '',
     UNIQUE(source_id, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS source_analysis (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    relevance REAL NOT NULL DEFAULT 0,
+    importance REAL NOT NULL DEFAULT 0,
+    novelty REAL NOT NULL DEFAULT 0,
+    authority REAL NOT NULL DEFAULT 0,
+    rationale TEXT NOT NULL DEFAULT '',
+    topics_json TEXT NOT NULL DEFAULT '[]',
+    leads_json TEXT NOT NULL DEFAULT '[]',
+    family_key TEXT NOT NULL DEFAULT '',
+    duplicate_of INTEGER REFERENCES sources(id),
+    analyzed_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    claim_text TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    object_text TEXT NOT NULL DEFAULT '',
+    observed_at TEXT,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'extracted',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    quote TEXT NOT NULL,
+    char_start INTEGER,
+    char_end INTEGER,
+    verified_span INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS frontier (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    canonical_url TEXT NOT NULL,
+    url TEXT NOT NULL,
+    parent_source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    anchor TEXT NOT NULL DEFAULT '',
+    relation TEXT NOT NULL DEFAULT 'link',
+    depth INTEGER NOT NULL DEFAULT 1,
+    score REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    domain TEXT NOT NULL DEFAULT '',
+    discovered_at TEXT NOT NULL,
+    leased_at TEXT,
+    completed_at TEXT,
+    error TEXT,
+    UNIQUE(run_id, canonical_url)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    active_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    angle TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT 'standard',
+    language TEXT NOT NULL DEFAULT 'all',
+    shell_enabled INTEGER NOT NULL DEFAULT 0,
+    onboarding_complete INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS router_credentials (
+    credential_key TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    successes INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    cooldown_until REAL NOT NULL DEFAULT 0,
+    last_status INTEGER,
+    last_error TEXT,
+    latency_ema REAL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS router_deployments (
+    deployment_key TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    successes INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    cooldown_until REAL NOT NULL DEFAULT 0,
+    latency_ema REAL,
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS router_task_health (
+    deployment_key TEXT NOT NULL,
+    task TEXT NOT NULL,
+    successes INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    cooldown_until REAL NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(deployment_key, task)
+);
+
+CREATE TABLE IF NOT EXISTS router_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT,
+    task TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    deployment_key TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    failure_kind TEXT,
+    status_code INTEGER,
+    latency_seconds REAL,
+    message TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS domain_state (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    domain TEXT NOT NULL,
+    sitemap_checked INTEGER NOT NULL DEFAULT 0,
+    robots_checked INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(run_id, domain)
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -104,7 +247,11 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_queries_run_round ON queries(run_id, round_no, status);
 CREATE INDEX IF NOT EXISTS idx_run_sources_run ON run_sources(run_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_source ON snapshots(source_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_analysis_run ON source_analysis(run_id, relevance DESC);
+CREATE INDEX IF NOT EXISTS idx_claims_run ON claims(run_id, source_id);
+CREATE INDEX IF NOT EXISTS idx_frontier_run ON frontier(run_id, status, score DESC);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_router_attempts_time ON router_attempts(created_at);
 """
 
 
@@ -119,12 +266,26 @@ class Storage:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # In-place migration from v0.1 databases.
+            self._ensure_column(conn, "runs", "max_depth", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "runs", "max_frontier_pages", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "plans", "gaps_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "plans", "source_classes_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "snapshots", "simhash", "TEXT NOT NULL DEFAULT ''")
 
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+    # ---------- runs / plans / queries ----------
     def create_run(self, spec: ResearchSpec) -> str:
         run_id = uuid.uuid4().hex[:12]
         now = utc_now()
@@ -132,18 +293,18 @@ class Storage:
             conn.execute(
                 """INSERT INTO runs
                    (id, topic, angle, mode, language, status, created_at, updated_at,
-                    current_round, max_rounds, max_results_per_query, fetch_top_per_query)
-                   VALUES (?, ?, ?, ?, ?, 'created', ?, ?, 0, ?, ?, ?)""",
-                (
-                    run_id, spec.topic, spec.angle, spec.mode, spec.language, now, now,
-                    spec.resolved_rounds(), spec.max_results_per_query, spec.fetch_top_per_query,
-                ),
+                    current_round, max_rounds, max_results_per_query, fetch_top_per_query,
+                    max_depth, max_frontier_pages)
+                   VALUES (?, ?, ?, ?, ?, 'created', ?, ?, 0, ?, ?, ?, ?, ?)""",
+                (run_id, spec.topic, spec.angle, spec.mode, spec.language, now, now,
+                 spec.resolved_rounds(), spec.max_results_per_query, spec.fetch_top_per_query,
+                 spec.resolved_depth(), spec.resolved_frontier_pages()),
             )
         return run_id
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         return dict(row) if row else None
 
     def latest_run(self) -> dict[str, Any] | None:
@@ -153,9 +314,7 @@ class Storage:
 
     def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     def run_spec(self, run_id: str) -> ResearchSpec:
@@ -165,7 +324,8 @@ class Storage:
         return ResearchSpec(
             topic=row["topic"], angle=row["angle"], mode=row["mode"], language=row["language"],
             max_rounds=row["max_rounds"], max_results_per_query=row["max_results_per_query"],
-            fetch_top_per_query=row["fetch_top_per_query"],
+            fetch_top_per_query=row["fetch_top_per_query"], max_depth=row.get("max_depth", 0),
+            max_frontier_pages=row.get("max_frontier_pages", 0),
         )
 
     def update_run(self, run_id: str, **fields: Any) -> None:
@@ -174,43 +334,41 @@ class Storage:
         if not pairs:
             return
         pairs.append(("updated_at", utc_now()))
-        sql = "UPDATE runs SET " + ", ".join(f"{k} = ?" for k, _ in pairs) + " WHERE id = ?"
-        values = [v for _, v in pairs] + [run_id]
         with self.connect() as conn:
-            conn.execute(sql, values)
+            conn.execute(
+                "UPDATE runs SET " + ", ".join(f"{k}=?" for k, _ in pairs) + " WHERE id=?",
+                [v for _, v in pairs] + [run_id],
+            )
 
     def save_plan(self, run_id: str, round_no: int, plan: Plan) -> None:
         with self.connect() as conn:
             conn.execute(
-                """INSERT INTO plans(run_id, round_no, objective, focus_json, queries_json, rationale, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO plans(run_id, round_no, objective, focus_json, queries_json, rationale,
+                                      gaps_json, source_classes_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id, round_no) DO UPDATE SET
                      objective=excluded.objective, focus_json=excluded.focus_json,
-                     queries_json=excluded.queries_json, rationale=excluded.rationale""",
-                (
-                    run_id, round_no, plan.objective, json.dumps(plan.focus, ensure_ascii=False),
-                    json.dumps(plan.queries, ensure_ascii=False), plan.rationale, utc_now(),
-                ),
+                     queries_json=excluded.queries_json, rationale=excluded.rationale,
+                     gaps_json=excluded.gaps_json, source_classes_json=excluded.source_classes_json""",
+                (run_id, round_no, plan.objective, json.dumps(plan.focus, ensure_ascii=False),
+                 json.dumps(plan.queries, ensure_ascii=False), plan.rationale,
+                 json.dumps(plan.gaps, ensure_ascii=False), json.dumps(plan.source_classes, ensure_ascii=False), utc_now()),
             )
             for query in plan.queries:
                 conn.execute(
-                    """INSERT OR IGNORE INTO queries(run_id, round_no, query, status, created_at)
-                       VALUES (?, ?, ?, 'pending', ?)""",
+                    "INSERT OR IGNORE INTO queries(run_id, round_no, query, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
                     (run_id, round_no, query, utc_now()),
                 )
 
     def get_plan(self, run_id: str, round_no: int) -> Plan | None:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM plans WHERE run_id=? AND round_no=?", (run_id, round_no)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM plans WHERE run_id=? AND round_no=?", (run_id, round_no)).fetchone()
         if not row:
             return None
         return Plan(
-            objective=row["objective"],
-            focus=json.loads(row["focus_json"]),
-            queries=json.loads(row["queries_json"]),
-            rationale=row["rationale"],
+            objective=row["objective"], focus=json.loads(row["focus_json"]), queries=json.loads(row["queries_json"]),
+            rationale=row["rationale"], gaps=json.loads(row["gaps_json"] or "[]"),
+            source_classes=json.loads(row["source_classes_json"] or "[]"),
         )
 
     def pending_queries(self, run_id: str, round_no: int) -> list[str]:
@@ -223,121 +381,124 @@ class Storage:
 
     def queries_for_run(self, run_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM queries WHERE run_id=? ORDER BY round_no, id", (run_id,)
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM queries WHERE run_id=? ORDER BY round_no,id", (run_id,)).fetchall()
         return [dict(row) for row in rows]
 
     def completed_queries(self, run_id: str) -> list[str]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT query FROM queries WHERE run_id=? AND status='completed' ORDER BY id", (run_id,)
-            ).fetchall()
+            rows = conn.execute("SELECT query FROM queries WHERE run_id=? AND status='completed' ORDER BY id", (run_id,)).fetchall()
         return [row["query"] for row in rows]
 
     def complete_query(self, run_id: str, round_no: int, query: str, error: str | None = None) -> None:
-        status = "failed" if error else "completed"
         with self.connect() as conn:
             conn.execute(
-                """UPDATE queries SET status=?, completed_at=?, error=?
-                   WHERE run_id=? AND round_no=? AND query=?""",
-                (status, utc_now(), error, run_id, round_no, query),
+                "UPDATE queries SET status=?,completed_at=?,error=? WHERE run_id=? AND round_no=? AND query=?",
+                ("failed" if error else "completed", utc_now(), error, run_id, round_no, query),
             )
 
-    def add_search_result(
-        self, run_id: str, query: str, rank: int, result: SearchResult
-    ) -> int:
+    # ---------- sources / snapshots ----------
+    def add_search_result(self, run_id: str, query: str, rank: int, result: SearchResult) -> int:
         from urllib.parse import urlsplit
-
         canonical = canonicalize_url(result.url)
         domain = (urlsplit(canonical).hostname or "").lower()
         now = utc_now()
         with self.connect() as conn:
             conn.execute(
-                """INSERT INTO sources(canonical_url, url, title, domain, first_seen_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO sources(canonical_url,url,title,domain,first_seen_at) VALUES (?,?,?,?,?)
                    ON CONFLICT(canonical_url) DO UPDATE SET
                      title=CASE WHEN excluded.title!='' THEN excluded.title ELSE sources.title END,
                      url=excluded.url""",
                 (canonical, result.url, result.title, domain, now),
             )
-            source_id = conn.execute(
-                "SELECT id FROM sources WHERE canonical_url=?", (canonical,)
-            ).fetchone()["id"]
+            source_id = int(conn.execute("SELECT id FROM sources WHERE canonical_url=?", (canonical,)).fetchone()["id"])
             conn.execute(
-                """INSERT INTO run_sources
-                   (run_id, source_id, search_query, rank, snippet, engine, category,
-                    published_at, raw_json, discovered_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(run_id, source_id, search_query, engine, category) DO UPDATE SET
-                     rank=MIN(run_sources.rank, excluded.rank),
-                     snippet=CASE WHEN length(excluded.snippet)>length(run_sources.snippet)
-                                  THEN excluded.snippet ELSE run_sources.snippet END,
-                     published_at=COALESCE(excluded.published_at, run_sources.published_at),
-                     raw_json=excluded.raw_json""",
-                (
-                    run_id, source_id, query, rank, result.snippet, result.engine, result.category,
-                    result.published_at, json.dumps(result.raw, ensure_ascii=False), now,
-                ),
+                """INSERT OR IGNORE INTO run_sources
+                   (run_id,source_id,search_query,rank,snippet,engine,category,published_at,raw_json,discovered_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, source_id, query, rank, result.snippet, result.engine, result.category,
+                 result.published_at, json.dumps(result.raw, ensure_ascii=False, default=str), now),
             )
-        return int(source_id)
+        return source_id
 
-    def latest_snapshot(self, source_id: int) -> dict[str, Any] | None:
+    def attach_crawled_source(self, run_id: str, url: str, parent_source_id: int | None, relation: str = "link") -> int:
+        from urllib.parse import urlsplit
+        canonical = canonicalize_url(url)
+        domain = (urlsplit(canonical).hostname or "").lower()
+        now = utc_now()
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM snapshots WHERE source_id=? ORDER BY fetched_at DESC LIMIT 1",
-                (source_id,),
-            ).fetchone()
-        return dict(row) if row else None
+            conn.execute(
+                "INSERT OR IGNORE INTO sources(canonical_url,url,title,domain,first_seen_at) VALUES (?,?,?,?,?)",
+                (canonical, url, "", domain, now),
+            )
+            sid = int(conn.execute("SELECT id FROM sources WHERE canonical_url=?", (canonical,)).fetchone()["id"])
+            conn.execute(
+                """INSERT OR IGNORE INTO run_sources
+                   (run_id,source_id,search_query,rank,snippet,engine,category,raw_json,discovered_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (run_id, sid, f"frontier:{parent_source_id or 0}", 0, "", "frontier", relation, "{}", now),
+            )
+        return sid
 
-    def save_snapshot(
-        self,
-        source_id: int,
-        final_url: str,
-        status_code: int,
-        content_type: str,
-        content_hash: str,
-        raw: bytes,
-        text: str,
-        extracted_title: str,
-    ) -> None:
-        base = self.data_dir / "sources" / content_hash[:2] / content_hash
-        base.parent.mkdir(parents=True, exist_ok=True)
-        raw_path = base.with_suffix(".html.gz")
-        text_path = base.with_suffix(".txt")
+    def save_snapshot(self, *, source_id: int, final_url: str, status_code: int, content_type: str,
+                      content_hash: str, raw: bytes, text: str, extracted_title: str, simhash: str = "") -> None:
+        folder = self.data_dir / "sources" / f"{source_id:08d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        raw_path = folder / f"{content_hash}.raw.gz"
+        text_path = folder / f"{content_hash}.txt"
         if not raw_path.exists():
-            with gzip.open(raw_path, "wb", compresslevel=6) as fh:
-                fh.write(raw)
+            raw_path.write_bytes(gzip.compress(raw, compresslevel=6))
         if not text_path.exists():
             text_path.write_text(text, encoding="utf-8")
         with self.connect() as conn:
             conn.execute(
                 """INSERT OR IGNORE INTO snapshots
-                   (source_id, fetched_at, final_url, status_code, content_type, content_hash,
-                    raw_path, text_path, extracted_title)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    source_id, utc_now(), final_url, status_code, content_type, content_hash,
-                    str(raw_path), str(text_path), extracted_title,
-                ),
+                   (source_id,fetched_at,final_url,status_code,content_type,content_hash,raw_path,text_path,extracted_title,simhash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (source_id, utc_now(), final_url, status_code, content_type, content_hash,
+                 str(raw_path), str(text_path), extracted_title, simhash),
             )
+            if extracted_title:
+                conn.execute("UPDATE sources SET title=CASE WHEN title='' THEN ? ELSE title END WHERE id=?", (extracted_title, source_id))
+
+    def latest_snapshot(self, source_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM snapshots WHERE source_id=? ORDER BY fetched_at DESC LIMIT 1", (source_id,)).fetchone()
+        return dict(row) if row else None
+
+    def snapshot_text(self, source_id: int) -> str:
+        snap = self.latest_snapshot(source_id)
+        if not snap or not snap.get("text_path"):
+            return ""
+        try:
+            return Path(snap["text_path"]).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    def snapshot_raw(self, source_id: int) -> bytes:
+        snap = self.latest_snapshot(source_id)
+        if not snap or not snap.get("raw_path"):
+            return b""
+        try:
+            return gzip.decompress(Path(snap["raw_path"]).read_bytes())
+        except OSError:
+            return b""
 
     def sources_for_run(self, run_id: str, limit: int = 500) -> list[SourceView]:
         with self.connect() as conn:
             rows = conn.execute(
-                """SELECT s.id, s.url, s.canonical_url, s.title, s.domain,
-                          rs.snippet, rs.search_query, rs.rank, rs.engine, rs.category,
-                          rs.published_at, rs.discovered_at,
-                          sn.text_path
-                   FROM run_sources rs
-                   JOIN sources s ON s.id=rs.source_id
-                   LEFT JOIN snapshots sn ON sn.id=(
-                       SELECT id FROM snapshots x WHERE x.source_id=s.id ORDER BY fetched_at DESC LIMIT 1
-                   )
-                   WHERE rs.run_id=?
-                   GROUP BY s.id
-                   ORDER BY MIN(rs.rank), s.id
-                   LIMIT ?""",
+                """SELECT s.*,
+                          (SELECT r2.rank FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) rank,
+                          (SELECT r2.search_query FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) search_query,
+                          (SELECT r2.engine FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) engine,
+                          (SELECT r2.category FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) category,
+                          (SELECT r2.snippet FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) snippet,
+                          (SELECT r2.published_at FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) published_at,
+                          (SELECT r2.discovered_at FROM run_sources r2 WHERE r2.run_id=rs.run_id AND r2.source_id=s.id ORDER BY r2.rank,r2.discovered_at LIMIT 1) discovered_at,
+                          (SELECT text_path FROM snapshots x WHERE x.source_id=s.id ORDER BY fetched_at DESC LIMIT 1) text_path,
+                          a.relevance,a.importance,a.novelty,a.authority,a.duplicate_of,a.family_key
+                   FROM sources s JOIN run_sources rs ON rs.source_id=s.id
+                   LEFT JOIN source_analysis a ON a.source_id=s.id AND a.run_id=rs.run_id
+                   WHERE rs.run_id=? GROUP BY s.id ORDER BY COALESCE(a.importance,0) DESC, rank, s.id LIMIT ?""",
                 (run_id, limit),
             ).fetchall()
         out: list[SourceView] = []
@@ -345,33 +506,32 @@ class Storage:
             excerpt = ""
             if row["text_path"]:
                 try:
-                    excerpt = Path(row["text_path"]).read_text(encoding="utf-8")[:4000]
+                    excerpt = Path(row["text_path"]).read_text(encoding="utf-8")[:6000]
                 except OSError:
                     pass
             out.append(SourceView(
-                id=row["id"], url=row["url"], canonical_url=row["canonical_url"],
-                title=row["title"], domain=row["domain"], snippet=row["snippet"],
-                search_query=row["search_query"], rank=row["rank"], engine=row["engine"],
-                category=row["category"], published_at=row["published_at"],
-                discovered_at=row["discovered_at"], fetched=bool(row["text_path"]),
-                text_excerpt=excerpt,
+                id=row["id"], url=row["url"], canonical_url=row["canonical_url"], title=row["title"], domain=row["domain"],
+                snippet=row["snippet"] if "snippet" in row.keys() else "", search_query=row["search_query"] or "",
+                rank=row["rank"] or 0, engine=row["engine"] or "unknown", category=row["category"] or "web",
+                published_at=row["published_at"], discovered_at=row["discovered_at"] or utc_now(), fetched=bool(row["text_path"]),
+                text_excerpt=excerpt, relevance=row["relevance"], importance=row["importance"], novelty=row["novelty"],
+                authority=row["authority"], duplicate_of=row["duplicate_of"], family_key=row["family_key"] or "",
             ))
         return out
 
-    def event(self, run_id: str | None, kind: str, message: str, data: dict[str, Any] | None = None) -> None:
+    def source_discoveries(self, run_id: str, source_id: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            conn.execute(
-                "INSERT INTO events(run_id, ts, kind, message, data_json) VALUES (?, ?, ?, ?, ?)",
-                (run_id, utc_now(), kind, message, json.dumps(data or {}, ensure_ascii=False)),
-            )
+            rows = conn.execute(
+                "SELECT search_query,rank,engine,category,published_at,discovered_at FROM run_sources WHERE run_id=? AND source_id=? ORDER BY discovered_at,rank",
+                (run_id, source_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def discoveries_for_run(self, run_id: str, limit: int = 5000) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                """SELECT rs.*, s.url, s.canonical_url, s.title, s.domain
-                   FROM run_sources rs JOIN sources s ON s.id=rs.source_id
-                   WHERE rs.run_id=? ORDER BY rs.discovered_at, rs.rank LIMIT ?""",
-                (run_id, limit),
+                """SELECT rs.*,s.url,s.canonical_url,s.title,s.domain FROM run_sources rs JOIN sources s ON s.id=rs.source_id
+                   WHERE rs.run_id=? ORDER BY rs.discovered_at,rs.rank LIMIT ?""", (run_id, limit)
             ).fetchall()
         out = []
         for row in rows:
@@ -384,19 +544,303 @@ class Storage:
             out.append(item)
         return out
 
-    def source_discoveries(self, run_id: str, source_id: int) -> list[dict[str, Any]]:
+    # ---------- evidence / triage ----------
+    def save_analysis(self, run_id: str, source_id: int, result: TriageResult, *, family_key: str = "", duplicate_of: int | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO source_analysis(run_id,source_id,relevance,importance,novelty,authority,rationale,
+                                                topics_json,leads_json,family_key,duplicate_of,analyzed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(run_id,source_id) DO UPDATE SET
+                     relevance=excluded.relevance,importance=excluded.importance,novelty=excluded.novelty,
+                     authority=excluded.authority,rationale=excluded.rationale,topics_json=excluded.topics_json,
+                     leads_json=excluded.leads_json,family_key=excluded.family_key,duplicate_of=excluded.duplicate_of,
+                     analyzed_at=excluded.analyzed_at""",
+                (run_id, source_id, result.relevance, result.importance, result.novelty, result.authority, result.rationale,
+                 json.dumps(result.topics, ensure_ascii=False), json.dumps(result.leads, ensure_ascii=False), family_key, duplicate_of, utc_now()),
+            )
+
+    def analysis_for_source(self, run_id: str, source_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM source_analysis WHERE run_id=? AND source_id=?", (run_id, source_id)).fetchone()
+        return dict(row) if row else None
+
+    def analyzed_source_ids(self, run_id: str) -> set[int]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT source_id FROM source_analysis WHERE run_id=?", (run_id,)).fetchall()
+        return {int(row["source_id"]) for row in rows}
+
+    def find_near_duplicate(self, run_id: str, source_id: int, simhash_value: str, max_distance: int = 3) -> int | None:
+        if not simhash_value:
+            return None
+        try:
+            target = int(simhash_value, 16)
+        except ValueError:
+            return None
         with self.connect() as conn:
             rows = conn.execute(
-                """SELECT search_query, rank, engine, category, published_at, discovered_at
-                   FROM run_sources WHERE run_id=? AND source_id=?
-                   ORDER BY discovered_at, rank""",
+                """SELECT DISTINCT s.id,x.simhash FROM sources s JOIN run_sources rs ON rs.source_id=s.id
+                   JOIN snapshots x ON x.source_id=s.id WHERE rs.run_id=? AND s.id<>? AND x.simhash<>''""",
                 (run_id, source_id),
+            ).fetchall()
+        best: tuple[int, int] | None = None
+        for row in rows:
+            try:
+                dist = (target ^ int(row["simhash"], 16)).bit_count()
+            except ValueError:
+                continue
+            if dist <= max_distance and (best is None or dist < best[1]):
+                best = (int(row["id"]), dist)
+        return best[0] if best else None
+
+    def add_claim(self, run_id: str, source_id: int, *, claim_text: str, subject: str, predicate: str,
+                  object_text: str, observed_at: str | None, confidence: float, quote: str,
+                  char_start: int | None, char_end: int | None, verified_span: bool) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO claims(run_id,source_id,claim_text,subject,predicate,object_text,observed_at,confidence,status,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, source_id, claim_text, subject, predicate, object_text, observed_at, confidence,
+                 "grounded" if verified_span else "unverified_span", utc_now()),
+            )
+            claim_id = int(cur.lastrowid)
+            conn.execute(
+                "INSERT INTO evidence(claim_id,source_id,quote,char_start,char_end,verified_span,created_at) VALUES (?,?,?,?,?,?,?)",
+                (claim_id, source_id, quote, char_start, char_end, 1 if verified_span else 0, utc_now()),
+            )
+        return claim_id
+
+    def claims_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT c.*,e.quote,e.char_start,e.char_end,e.verified_span,s.url,s.title,s.domain
+                   FROM claims c LEFT JOIN evidence e ON e.claim_id=c.id JOIN sources s ON s.id=c.source_id
+                   WHERE c.run_id=? ORDER BY c.confidence DESC,c.id LIMIT ?""", (run_id, limit)
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def events_for_run(self, run_id: str, limit: int = 300) -> list[dict[str, Any]]:
+    # ---------- frontier ----------
+    def add_frontier(self, run_id: str, url: str, *, parent_source_id: int | None, anchor: str, relation: str,
+                     depth: int, score: float) -> bool:
+        from urllib.parse import urlsplit
+        canonical = canonicalize_url(url)
+        domain = (urlsplit(canonical).hostname or "").lower()
+        if not canonical.startswith(("http://", "https://")) or not domain:
+            return False
+        with self.connect() as conn:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO frontier(run_id,canonical_url,url,parent_source_id,anchor,relation,depth,score,status,domain,discovered_at)
+                   VALUES (?,?,?,?,?,?,?,?, 'pending', ?,?)""",
+                (run_id, canonical, url, parent_source_id, anchor[:500], relation, depth, score, domain, utc_now()),
+            )
+        return bool(cur.rowcount)
+
+    def lease_frontier(self, run_id: str, *, max_depth: int, min_score: float, per_domain_limit: int, limit: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM events WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit)
+                """SELECT f.* FROM frontier f
+                   WHERE f.run_id=? AND f.status='pending' AND f.depth<=? AND f.score>=?
+                     AND (SELECT COUNT(*) FROM frontier d WHERE d.run_id=f.run_id AND d.domain=f.domain AND d.status='completed') < ?
+                   ORDER BY f.score DESC,f.depth ASC,f.id ASC LIMIT ?""",
+                (run_id, max_depth, min_score, per_domain_limit, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                conn.executemany("UPDATE frontier SET status='leased',leased_at=? WHERE id=?", [(utc_now(), i) for i in ids])
+        return [dict(row) for row in rows]
+
+    def complete_frontier(self, frontier_id: int, error: str | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE frontier SET status=?,completed_at=?,error=? WHERE id=?",
+                ("failed" if error else "completed", utc_now(), error, frontier_id),
+            )
+
+
+    def frontier_for_run(self, run_id: str, limit: int = 5000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM frontier WHERE run_id=? ORDER BY score DESC,id LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recover_frontier_leases(self, run_id: str) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE frontier SET status='pending',leased_at=NULL WHERE run_id=? AND status='leased'",
+                (run_id,),
+            )
+        return int(cur.rowcount)
+
+    def frontier_stats(self, run_id: str) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT status,COUNT(*) n FROM frontier WHERE run_id=? GROUP BY status", (run_id,)).fetchall()
+        return {row["status"]: int(row["n"]) for row in rows}
+
+    def domain_checked(self, run_id: str, domain: str, field: str) -> bool:
+        if field not in {"sitemap_checked", "robots_checked"}:
+            raise ValueError(field)
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT {field} FROM domain_state WHERE run_id=? AND domain=?", (run_id, domain)).fetchone()
+        return bool(row and row[field])
+
+    def mark_domain_checked(self, run_id: str, domain: str, field: str) -> None:
+        if field not in {"sitemap_checked", "robots_checked"}:
+            raise ValueError(field)
+        with self.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO domain_state(run_id,domain) VALUES (?,?)", (run_id, domain))
+            conn.execute(f"UPDATE domain_state SET {field}=1 WHERE run_id=? AND domain=?", (run_id, domain))
+
+    # ---------- sessions ----------
+    def create_session(self, name: str = "default") -> str:
+        sid = uuid.uuid4().hex[:10]
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO sessions(id,name,created_at,updated_at) VALUES (?,?,?,?)",
+                (sid, name, now, now),
+            )
+        return sid
+
+    def latest_session(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_session(self, session_id: str, **fields: Any) -> None:
+        allowed = {"name", "active_run_id", "angle", "mode", "language", "shell_enabled", "onboarding_complete", "metadata_json"}
+        pairs = [(k, int(v) if k in {"shell_enabled", "onboarding_complete"} else v) for k, v in fields.items() if k in allowed]
+        if not pairs:
+            return
+        pairs.append(("updated_at", utc_now()))
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET " + ",".join(f"{k}=?" for k, _ in pairs) + " WHERE id=?",
+                [v for _, v in pairs] + [session_id],
+            )
+
+    # ---------- router health ----------
+    def router_state(self, table: str, key_column: str, key: str) -> dict[str, Any] | None:
+        if table not in {"router_credentials", "router_deployments"} or key_column not in {"credential_key", "deployment_key"}:
+            raise ValueError("invalid router state lookup")
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM {table} WHERE {key_column}=?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def router_task_state(self, deployment_key: str, task: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM router_task_health WHERE deployment_key=? AND task=?", (deployment_key, task)).fetchone()
+        return dict(row) if row else None
+
+    def update_router_credential(self, credential_key: str, provider_id: str, credential_id: str, *, ok: bool,
+                                 cooldown_until: float = 0, status_code: int | None = None, error: str | None = None,
+                                 latency: float | None = None) -> None:
+        self._update_health("router_credentials", "credential_key", credential_key,
+                            {"provider_id": provider_id, "credential_id": credential_id}, ok=ok,
+                            cooldown_until=cooldown_until, status_code=status_code, error=error, latency=latency)
+
+    def update_router_deployment(self, deployment_key: str, provider_id: str, credential_id: str, model_id: str, *, ok: bool,
+                                 cooldown_until: float = 0, error: str | None = None, latency: float | None = None) -> None:
+        self._update_health("router_deployments", "deployment_key", deployment_key,
+                            {"provider_id": provider_id, "credential_id": credential_id, "model_id": model_id}, ok=ok,
+                            cooldown_until=cooldown_until, error=error, latency=latency)
+
+    def _update_health(self, table: str, key_col: str, key: str, identity: dict[str, Any], *, ok: bool,
+                       cooldown_until: float, status_code: int | None = None, error: str | None = None,
+                       latency: float | None = None) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM {table} WHERE {key_col}=?", (key,)).fetchone()
+            if row is None:
+                cols = [key_col, *identity.keys(), "successes", "failures", "consecutive_failures", "cooldown_until",
+                        "last_error", "latency_ema", "updated_at"]
+                vals = [key, *identity.values(), 1 if ok else 0, 0 if ok else 1, 0 if ok else 1,
+                        0 if ok else cooldown_until, None if ok else error, latency, now]
+                if table == "router_credentials":
+                    cols.insert(-3, "last_status")
+                    vals.insert(-3, status_code)
+                conn.execute(
+                    f"INSERT INTO {table}({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", vals
+                )
+                return
+            successes = int(row["successes"]) + (1 if ok else 0)
+            failures = int(row["failures"]) + (0 if ok else 1)
+            consecutive = 0 if ok else int(row["consecutive_failures"]) + 1
+            old_latency = row["latency_ema"]
+            ema = latency if old_latency is None else (float(old_latency) * 0.8 + float(latency or old_latency) * 0.2)
+            fields = ["successes=?", "failures=?", "consecutive_failures=?", "cooldown_until=?", "last_error=?", "latency_ema=?", "updated_at=?"]
+            values: list[Any] = [successes, failures, consecutive, 0 if ok else cooldown_until, None if ok else error, ema, now]
+            if table == "router_credentials":
+                fields.append("last_status=?")
+                values.append(status_code)
+            values.append(key)
+            conn.execute(f"UPDATE {table} SET {','.join(fields)} WHERE {key_col}=?", values)
+
+    def update_router_task(self, deployment_key: str, task: str, *, ok: bool, cooldown_until: float = 0, error: str | None = None) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM router_task_health WHERE deployment_key=? AND task=?", (deployment_key, task)).fetchone()
+            if not row:
+                conn.execute(
+                    """INSERT INTO router_task_health(deployment_key,task,successes,failures,consecutive_failures,cooldown_until,last_error,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (deployment_key, task, 1 if ok else 0, 0 if ok else 1, 0 if ok else 1,
+                     0 if ok else cooldown_until, None if ok else error, now),
+                )
+            else:
+                conn.execute(
+                    """UPDATE router_task_health SET successes=?,failures=?,consecutive_failures=?,cooldown_until=?,last_error=?,updated_at=?
+                       WHERE deployment_key=? AND task=?""",
+                    (int(row["successes"]) + (1 if ok else 0), int(row["failures"]) + (0 if ok else 1),
+                     0 if ok else int(row["consecutive_failures"]) + 1, 0 if ok else cooldown_until,
+                     None if ok else error, now, deployment_key, task),
+                )
+
+    def record_router_attempt(self, *, run_id: str | None, task: str, provider_id: str, credential_id: str,
+                              model_id: str, deployment_key: str, ok: bool, failure_kind: str | None,
+                              status_code: int | None, latency_seconds: float | None, message: str | None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO router_attempts(run_id,task,provider_id,credential_id,model_id,deployment_key,ok,
+                                                failure_kind,status_code,latency_seconds,message,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, task, provider_id, credential_id, model_id, deployment_key, 1 if ok else 0,
+                 failure_kind, status_code, latency_seconds, message, utc_now()),
+            )
+
+    def router_attempts(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM router_attempts ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------- events ----------
+    def event(self, run_id: str | None, kind: str, message: str, data: dict[str, Any] | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO events(run_id,ts,kind,message,data_json) VALUES (?,?,?,?,?)",
+                (run_id, utc_now(), kind, message, json.dumps(data or {}, ensure_ascii=False, default=str)),
+            )
+
+    def events_for_run(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM events WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit)).fetchall()
+        out = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                item["data"] = json.loads(item.pop("data_json"))
+            except Exception:
+                item["data"] = {}
+            out.append(item)
+        return out

@@ -1,27 +1,35 @@
-# Security Policy
+# Security policy and research scope
 
-TraceWeave processes untrusted public-web content and should be treated as a network-facing research tool.
+TraceWeave processes untrusted public-web content. Treating web pages as instructions would create prompt-injection and network-security risks, so model prompts explicitly label source content as untrusted data.
 
-## Supported version
+## HTTP safety
 
-During the 0.x series, only the newest release receives fixes.
+The default fetcher:
 
-## Reporting a vulnerability
+- allows only HTTP/HTTPS
+- resolves hostnames and rejects private/reserved destinations
+- re-checks redirected destinations
+- disables ambient proxy environment inheritance for fetches
+- limits response size
+- limits redirects
+- respects robots.txt by default
 
-Please report security issues privately to the repository maintainers rather than posting exploit details in a public issue. Replace this paragraph with your project security contact before publishing the repository.
+These protections are defense in depth, not a substitute for container/network isolation when running an internet-facing research service.
 
-## Stage-1 security boundaries
+## Local shell
 
-- Only HTTP/HTTPS fetching is supported.
-- Private, loopback, link-local and other non-global IP destinations are rejected.
-- Redirect targets are validated before following them.
-- Response bytes and request duration are bounded.
-- Unsupported binary content is not parsed in Stage 1.
-- Web content is data; it is never allowed to modify system prompts or execute tools by itself.
-- LLM credentials are read from environment configuration and are not intentionally written to the run database.
+TUI shell execution is disabled by default. When enabled it is **not sandboxed**: commands run with the TraceWeave process user's operating-system permissions. Use a dedicated unprivileged service account on a VPS. Never expose a shell-enabled TUI to untrusted users.
 
-These controls reduce risk but are not a formal sandbox. Run TraceWeave under a normal unprivileged OS account and keep secrets unrelated to research outside its process environment.
+## Secrets
 
-## Authorized use
+Provider API tokens belong in environment variables. `providers.toml` stores environment-variable names and stable credential ids; SQLite health/attempt records store those ids but not token values.
 
-TraceWeave is intended for lawful public-source research. Do not use it to bypass authentication/access controls or to test systems without authorization. Active network probing, when added later, should remain explicitly scoped and disabled by default.
+Do not commit `.env` or token-bearing service files.
+
+## Public OSINT scope
+
+The default project is intended for public-web research, public documents and passive public infrastructure metadata. It should not be used to automate access-control bypass, credential theft, stalking/private-person location inference, or unauthorized active scanning.
+
+## Reporting vulnerabilities
+
+Please open a private security report through the hosting repository's security-advisory mechanism when available rather than publishing a working exploit in a public issue.

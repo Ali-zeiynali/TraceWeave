@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-_TRACKING_KEYS = {
-    "fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "ref", "ref_src",
-}
+_TRACKING_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid", "igshid", "ref", "ref_src"}
+_WORD_RE = re.compile(r"[\w\-]{2,}", re.UNICODE)
 
 
 def canonicalize_url(url: str) -> str:
@@ -35,8 +35,35 @@ def canonicalize_url(url: str) -> str:
 
 
 def is_public_ip(value: str) -> bool:
-    ip = ipaddress.ip_address(value)
-    return bool(ip.is_global)
+    return bool(ipaddress.ip_address(value).is_global)
+
+
+def words(text: str) -> set[str]:
+    return {m.group(0).casefold() for m in _WORD_RE.finditer(text)}
+
+
+def lexical_overlap(a: str, b: str) -> float:
+    left, right = words(a), words(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, len(left))
+
+
+def simhash64(text: str) -> str:
+    tokens = list(words(text))
+    if not tokens:
+        return ""
+    vector = [0] * 64
+    for token in tokens[:50_000]:
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+        value = int.from_bytes(digest, "big")
+        for bit in range(64):
+            vector[bit] += 1 if value & (1 << bit) else -1
+    out = 0
+    for bit, score in enumerate(vector):
+        if score >= 0:
+            out |= 1 << bit
+    return f"{out:016x}"
 
 
 def extract_first_json_object(text: str) -> dict:
@@ -47,7 +74,6 @@ def extract_first_json_object(text: str) -> dict:
             return parsed
     except json.JSONDecodeError:
         pass
-
     start = text.find("{")
     if start < 0:
         raise ValueError("No JSON object found in model response")
@@ -71,7 +97,7 @@ def extract_first_json_object(text: str) -> dict:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                value = json.loads(text[start : index + 1])
+                value = json.loads(text[start:index + 1])
                 if not isinstance(value, dict):
                     raise ValueError("JSON response is not an object")
                 return value

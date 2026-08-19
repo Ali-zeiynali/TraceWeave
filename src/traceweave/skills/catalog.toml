@@ -1,0 +1,19 @@
+[[skills]]
+name = "iterative-planning"
+file = "iterative_planning.md"
+tasks = ["planning", "replanning"]
+
+[[skills]]
+name = "evidence-grounding"
+file = "evidence_grounding.md"
+tasks = ["triage", "claim_extraction", "synthesis"]
+
+[[skills]]
+name = "source-provenance"
+file = "source_provenance.md"
+tasks = ["triage", "synthesis"]
+
+[[skills]]
+name = "deep-traversal"
+file = "deep_traversal.md"
+tasks = ["replanning"]

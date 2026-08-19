@@ -1,189 +1,151 @@
-# TraceWeave v0.1 Architecture
+# TraceWeave v0.3 Architecture
 
-This document defines the boundaries that should remain stable while TraceWeave grows from Stage 1 to the later roadmap.
+TraceWeave is deliberately split into a **reasoning plane** and a **deterministic data plane**. Models plan, re-plan, triage, extract grounded claims and synthesize. Python owns search, crawling, persistence, provenance, routing, retries, frontier scheduling and resume.
 
-## 1. Core rule
-
-The language model is **not** the runtime, database, browser, queue, or memory system.
-
-It is a replaceable reasoning component used at explicit boundaries.
+## 1. Core invariant
 
 ```text
-LLM
- ├─ may propose a plan
- └─ may synthesize bounded evidence
-
-TraceWeave
- ├─ owns research state
- ├─ executes search
- ├─ fetches sources
- ├─ stores provenance
- ├─ records events
- ├─ resumes work
- └─ exports results
+ResearchSpec
+    ↓
+PLAN (bounded)
+    ↓
+SEARCH + STORE DISCOVERY
+    ↓
+FETCH + SNAPSHOT
+    ↓
+TRIAGE + GROUNDED CLAIMS
+    ↓
+BEST-FIRST FRONTIER
+    ↓
+ASSESS GAPS / LEADS
+    ↓
+RE-PLAN
+    ↓
+... bounded rounds ...
+    ↓
+SYNTHESIS FROM STORED EVIDENCE
 ```
 
-This rule is the main reason Stage 1 can later support unstable free providers without rewriting the research loop.
+A run must remain understandable and resumable without relying on model conversation history.
 
-## 2. Module map
+## 2. Runtime boundaries
 
 ```text
-src/traceweave/
-├── cli.py                  Typer command-line interface
-├── tui/app.py              Textual full-screen UI
-├── config.py               environment/configuration model
-├── models.py               typed research domain objects
-├── runtime.py              composition root / dependency wiring
-├── engine.py               iterative orchestration
-├── planner.py              plan + re-plan policy
-├── fetcher.py              bounded public HTTP text/HTML fetcher
-├── storage.py              durable SQLite state + provenance
-├── exporter.py             Markdown/JSON/Mermaid exports
-├── utils.py                canonicalization / parsing helpers
-│
-├── providers/
-│   ├── base.py             LLM protocol
-│   ├── factory.py          provider construction
-│   └── openai_compat.py    Stage-1 generic chat-completions adapter
-│
-├── search/
-│   ├── base.py             normalized search protocol
-│   ├── factory.py          search-backend selection
-│   ├── searxng.py          SearXNG adapter
-│   └── ddgs_backend.py     DDGS adapter
-│
-└── prompts/
-    ├── initial_plan.txt
-    ├── replan.txt
-    └── synthesis.txt
+┌─────────────────────────────────────────────────────────────┐
+│ TUI / CLI                                                   │
+└───────────────────────────┬─────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ ResearchEngine                                               │
+│ plan → search → analyze → frontier → re-plan → synthesize   │
+└───────┬───────────────────┬───────────────────┬─────────────┘
+        │                   │                   │
+        ↓                   ↓                   ↓
+ SearchBackend          ModelRouter        FrontierManager
+        │                   │                   │
+        ↓                   ↓                   ↓
+ SearXNG/DDGS       provider/token/model    SafeFetcher
+                            │               Crawl4AI optional
+                            ↓
+                     task-specific prompts
+                     progressive skills
+        └───────────────────┬───────────────────┘
+                            ↓
+                        Storage
+              SQLite + files + durable events
 ```
 
-## 3. Composition root
+`runtime.build_runtime()` is the composition root. Concrete adapters should be wired there rather than imported throughout unrelated modules.
 
-`runtime.build_runtime()` is the only place that should normally wire concrete implementations together.
+## 3. Durable model
 
-The engine receives abstract responsibilities:
+### Research state
+
+- `runs`: immutable request parameters plus lifecycle/current round.
+- `plans`: the exact plan saved for each round, including gaps and source classes.
+- `queries`: resumable query work units with status.
+- `events`: append-oriented research/runtime trail.
+
+### Provenance
+
+- `sources`: canonical resource identity.
+- `run_sources`: every discovery edge from a query/frontier to a source. Multiple engines/categories/queries are preserved independently.
+- `snapshots`: fetched content versions with SHA-256, SimHash, raw gzip body and extracted text.
+
+A failed fetch never erases the original discovery.
+
+### Evidence
+
+- `source_analysis`: relevance, importance, novelty, authority, topics, leads, source family and duplicate relation.
+- `claims`: atomic claim records.
+- `evidence`: exact quote, source id, snapshot hash and verified character offsets.
+
+A model-proposed quote must literally occur in the stored snapshot before TraceWeave persists it as grounded evidence.
+
+### Deep traversal
+
+- `frontier`: durable best-first URL queue with parent source, relation, anchor, depth, score, domain and status.
+- `domain_state`: per-run/domain crawler metadata such as sitemap/robots work.
+
+Frontier state is `pending → leased → completed|failed`. Abandoned leases are returned to pending on resume.
+
+### Sessions
+
+- `sessions`: TUI/workspace state such as active run, angle, mode, language, onboarding and local-shell toggle.
+
+A session is not a research run. Several UI sessions may point at different durable runs.
+
+### Router health
+
+- `router_credentials`: token/credential health. No raw token is persisted.
+- `router_deployments`: `provider + credential + model` health.
+- `router_task_health`: deployment + task suitability health.
+- `router_attempts`: auditable routing outcomes without secrets.
+
+## 4. Provider-router failure scopes
+
+The fundamental routing candidate is:
 
 ```text
-Storage
-SearchBackend
-Planner
-LLMProvider | None
-ProgressCallback | None
+provider + credential/token + model
 ```
 
-Later provider meshes, queues, graph stores or alternative search adapters should be introduced through composition instead of imported directly throughout the application.
+TraceWeave intentionally has **no hard provider-wide poisoning**.
 
-## 4. Research state machine
+### Credential scope
 
-Conceptually:
+`401`, `403`, `429` and quota/auth failures affect the configured credential id. Every model using that token may cool down, but other tokens from the same provider remain eligible.
+
+### Deployment scope
+
+Timeout, transient network/upstream failure, model/request mismatch or malformed endpoint behavior affects only `token + model`.
+
+### Task scope
+
+Refusal-style output or structured-JSON failure affects only `token + model + task` so a model can be unsuitable for `replanning` yet remain useful for `triage`.
+
+Cooldown TTL prefers upstream reset hints such as `Retry-After`; otherwise bounded exponential backoff is used by failure class. Historical latency/failure observations decay after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`, while an active absolute cooldown is still honored.
+
+## 5. Why tool calling is not required
+
+Models never own the crawler or shell. The minimal model contract is:
 
 ```text
-CREATED
-   ↓
-RUNNING
-   ↓
-ROUND N
-   ├─ get/create plan
-   ├─ persist plan
-   ├─ resume pending queries
-   ├─ search
-   ├─ persist each discovery immediately
-   ├─ fetch selected sources
-   ├─ persist snapshots
-   └─ commit round number
-   ↓
-RE-PLAN FROM COMPACT STATE
-   ↓
-NEXT ROUND
-   ↓
-SYNTHESIS
-   ↓
-COMPLETED
+json(system, user, task) -> dict
+text(system, user, task) -> str
 ```
 
-Interruptions can produce `paused` or `failed`. A later `resume` loads durable state rather than reconstructing it from conversation history.
+This keeps ordinary OpenAI-compatible endpoints useful even when their function/tool calling is absent or unreliable. The orchestrator executes search, fetch, persistence and traversal.
 
-## 5. Persistence model
+## 6. Planning and context discipline
 
-### runs
+The initial planner receives the `ResearchSpec`, not the whole future research tree. Every later round receives a compact state consisting of completed queries, high-value sources, grounded claims, gaps and leads.
 
-One research request and its durable lifecycle.
+Raw pages remain outside model context. `ContextBuilder` behavior is currently distributed between planner/analyzer/engine payload builders; later long-memory stages can extract that into a dedicated retrieval component without changing the evidence schema.
 
-### plans
+## 7. Search and collection
 
-One plan per round. The exact plan is preserved so a resume never needs to regenerate it.
-
-### queries
-
-Each query has its own status. This is the basic unit of resumable search work in v0.1.
-
-### sources
-
-Canonical web resource identity. Tracking parameters are stripped for identity, while the original discovered URL is retained.
-
-### run_sources
-
-The **discovery edge** between a run and a source. This is deliberately separate from `sources` because the same URL may be discovered:
-
-- by multiple queries;
-- at different ranks;
-- from different search engines;
-- as web and/or news material.
-
-Every discovery edge retains its own metadata and raw search result. Distinct engines/categories are preserved even when they expose the same canonical URL for the same query.
-
-### snapshots
-
-Fetched content versions identified by hash. Search discovery can exist without a snapshot.
-
-### events
-
-Append-style operational/research trail used by the TUI today and richer visualization/observability later.
-
-## 6. Why discovery and snapshot are separate
-
-A common crawler design accidentally equates:
-
-```text
-fetch failed == source never existed
-```
-
-TraceWeave does not.
-
-```text
-Search result
-   ↓ always persisted
-Discovery record
-   ↓ fetch attempted
-Snapshot (optional)
-```
-
-This preserves obscure sources even when a site disappears, blocks automated clients, times out, or becomes an archive target in a future stage.
-
-## 7. Planning boundary
-
-Stage 1 uses two planning functions:
-
-```text
-initial(spec)
-replan(spec, completed_queries, source_capsules)
-```
-
-The second call receives a **compact** state. It does not receive all raw pages or the entire event history.
-
-Future versions should keep this property when they add:
-
-- claims;
-- gaps;
-- graph neighborhoods;
-- timelines;
-- branch notebooks;
-- coverage scores.
-
-## 8. Search adapter contract
-
-A backend returns normalized `SearchResult` objects:
+Search adapters normalize to:
 
 ```text
 url
@@ -195,130 +157,67 @@ published_at
 raw metadata
 ```
 
-New adapters should normalize at the boundary rather than force the engine to understand each search provider's schema.
-
-Likely future adapters:
+Stage 3 collection ladder:
 
 ```text
-OpenAlex
-Crossref
-GitHub
-Wayback
-Common Crawl
-RSS
-site-specific public APIs
+SearXNG / DDGS discovery
+        ↓
+SafeFetcher (default)
+        ↓ if JS-heavy and explicitly enabled
+Crawl4AI BrowserFetcher
 ```
 
-## 9. Provider boundary
+`SafeFetcher` validates public HTTP(S) targets, resolves and rejects private/reserved destinations, re-validates redirects, limits bytes/time, extracts links/text and does not inherit ambient proxy variables.
 
-Stage 1 does not ask the model to invoke tools.
+## 8. Best-first traversal
 
-The minimal provider interface is:
+`max_depth` is only a ceiling. Each link is scored using topic/angle overlap, anchor/path signals, citation/document hints, domain context and low-value path penalties. Global run budget plus per-domain limits prevent a single site from consuming the investigation.
 
-```text
-json(system, user) -> object
-text(system, user) -> text
-```
+This avoids breadth explosions while still allowing a high-value obscure link several hops away to enter a later re-plan.
 
-This intentionally supports endpoints that provide ordinary chat completions but weak or nonexistent function/tool calling.
+## 9. Prompt and skill layout
 
-In v0.6 the provider factory can become a capability-aware router while keeping `Planner` and `ResearchEngine` mostly unchanged.
+`src/traceweave/prompts/` contains task-specific contracts:
 
-## 10. Fetch boundary
+- `initial_plan.txt`
+- `replan.txt`
+- `triage.txt`
+- `claims.txt`
+- `synthesis.txt`
 
-`SafeFetcher` is for ordinary public text/HTML collection only.
+`src/traceweave/skills/` contains compact procedural knowledge. `SkillRegistry` progressively loads only skills relevant to the current task, so the base prompt does not carry every research procedure on every call.
 
-Its responsibilities are intentionally narrow:
+Web/source text is always treated as **untrusted data**, never executable instructions.
 
-- validate public HTTP/HTTPS targets;
-- validate redirects;
-- limit bytes;
-- limit time;
-- extract readable text;
-- produce a content hash.
+## 10. TUI boundary
 
-It should not grow into a browser automation framework.
+The Textual application only invokes normal runtime APIs and renders `ProgressEvent`s. No research algorithm should live exclusively in a widget. This keeps the same engine usable via TUI, CLI, future API service and background workers.
 
-Later:
+The v0.3 UI starts with onboarding + command input only. The workspace appears after `/research`, `/resume`, or a command that has meaningful data to display. The old footer was removed entirely.
 
-```text
-ordinary HTTP → SafeFetcher
-JS page       → Crawl4AI adapter
-interaction   → Playwright worker
-PDF           → document pipeline
-```
+## 11. Resource strategy for an 8 GB VPS
 
-## 11. TUI boundary
-
-The TUI observes `ProgressEvent` objects and calls normal engine/export APIs. Research logic should never be implemented only inside widgets.
-
-This ensures the same engine remains usable through:
-
-- TUI;
-- CLI;
-- SSH/tmux;
-- future HTTP API;
-- scheduled jobs.
-
-## 12. Mermaid export
-
-Stage 1 can already export:
+Default v0.3 stays deliberately small:
 
 ```text
-run → round → query → source
-```
-
-as Mermaid.
-
-This is intentionally generated from ordinary relational state. It gives us a visual research trail now without committing to Neo4j or another graph database before graph requirements are mature.
-
-## 13. Stage-2 extension points
-
-The next milestone should add evidence structures without replacing Stage-1 primitives.
-
-Expected additions:
-
-```text
-documents
-chunks
-claims
-evidence_spans
-source_scores
-source_families
-```
-
-`source_id` and snapshot hashes should remain provenance anchors.
-
-## 14. Resource strategy for the 8 GB target VPS
-
-Stage 1 deliberately avoids:
-
-- Redis;
-- Neo4j;
-- Qdrant;
-- Elasticsearch;
-- Playwright browsers;
-- local LLMs;
-- Temporal;
-- Kafka.
-
-The target runtime is therefore approximately:
-
-```text
-TraceWeave process
+TraceWeave Python process
 SQLite
-network connections
-optional external/self-hosted SearXNG
+HTTP client
+Textual TUI
+SearXNG optional external service
 ```
 
-Later services should be introduced only when their capability is actually needed.
+Crawl4AI and LiteLLM are optional extras. Neo4j, Qdrant, Elasticsearch, Kafka, Temporal and local large models are not default dependencies.
 
-## 15. Non-negotiable invariants for future stages
+## 12. Stable extension points
 
-1. A discovered source is recorded before optional expensive processing.
-2. Raw evidence is never replaced by an LLM summary.
-3. A plan is persisted before its searches execute.
-4. Model/provider identity is not embedded in core research logic.
-5. External content cannot issue trusted instructions merely by appearing on a page.
-6. Resume operates from durable structured state, not narrative chat memory.
-7. Every output claim added in later stages must be traceable back to evidence/source state.
+Later stages should extend, not replace, these boundaries:
+
+- `SearchBackend` for OpenAlex/Crossref/arXiv/GitHub/archives.
+- `ModelRouter` drivers and capability-aware scheduling.
+- `FrontierManager` scoring/reranking.
+- evidence/source-family analysis.
+- entity/relationship graph tables layered over existing source/claim provenance.
+- workers/queues outside the engine when one process is no longer sufficient.
+
+The invariant to preserve is: **durable evidence and state live outside model context; model outputs are proposals until deterministic validation/persistence accepts them.**

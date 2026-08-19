@@ -1,337 +1,264 @@
 # TraceWeave
 
-> Iterative public-web research with complete source provenance.
+**TraceWeave is an open-source, evidence-first, iterative research engine for the public web.**
 
-TraceWeave is an open-source research engine designed to grow from a small, usable terminal application into a long-horizon research system. Version **0.1** deliberately starts with a narrow, reliable core instead of pretending to be a complete autonomous OSINT platform.
-
-The fundamental loop is:
+It is designed around a simple rule: a long investigation should not be one giant prompt. TraceWeave repeatedly plans a bounded round, searches and collects evidence, assesses what changed, updates durable state, and then re-plans.
 
 ```text
-PLAN
-  ↓
-SEARCH + COLLECT
-  ↓
-STORE SOURCES + SNAPSHOTS
-  ↓
-ASSESS CURRENT STATE
-  ↓
-RE-PLAN
-  ↓
-TARGETED SEARCH
-  ↓
-...
-  ↓
-SYNTHESIZE / EXPORT
+PLAN → SEARCH → STORE → ASSESS → RE-PLAN → TARGETED SEARCH → … → SYNTHESIS
 ```
 
-A plan is therefore **not** a giant one-shot plan created before research starts. Each round sees what the previous round discovered and decides what should be searched next.
+Version **0.3.0** combines Stage 2 (Evidence & Triage) and Stage 3 (Best-First Deep Traversal) on top of the v0.1 research core. The provider mesh was intentionally accelerated into v0.3 because provider instability and multi-token routing are foundational for long-running free/credit-based deployments.
 
-## What v0.1 already does
+## What v0.3 does
 
-- Full-screen terminal UI built with Textual.
-- Normal CLI for automation and SSH use.
-- Quick / Standard / Deep modes.
-- Iterative `plan → search → re-plan → search` loop.
-- Optional OpenAI-compatible LLM planner/synthesizer.
-- Deterministic planner when no LLM is configured.
-- Search abstraction with:
-  - SearXNG backend.
-  - DDGS fallback.
-  - `auto` mode: prefer SearXNG, fall back to DDGS.
-- Every discovered result is stored immediately, even if page fetching fails.
-- Search provenance per source:
-  - original URL;
-  - canonical URL;
-  - title;
-  - domain;
-  - search query that found it;
-  - rank;
-  - search engine/provider;
-  - web/news category;
-  - publication date when available;
-  - raw result metadata.
-- Safe text/HTML fetcher with:
-  - redirect-by-redirect validation;
-  - private/reserved-IP blocking;
-  - response-size limit;
-  - timeout;
-  - bounded concurrency.
-- Successful fetches are stored as:
-  - compressed raw HTML/text;
-  - extracted readable text;
-  - SHA-256 content hash;
-  - response metadata.
-- SQLite WAL database.
-- Durable research runs with resume after interruption/failure.
-- Markdown and JSON export.
-- Event/research trail for later visualization.
-- Unit tests, offline smoke test, GitHub Actions CI, MIT license and contribution/security files.
+- Full-screen Textual TUI with persistent sessions and onboarding.
+- Iterative plan/search/re-plan loop; plans are persisted per round.
+- Complete search provenance before page fetch: original URL, canonical URL, query, rank, engine, category/news type, publication date when available, raw search metadata and discovery time.
+- Bounded HTTP snapshot collection with SSRF protections and raw/text storage.
+- Source triage: relevance, importance, novelty and authority.
+- Exact/near duplicate detection using content hashes + SimHash.
+- Grounded atomic claims: evidence quotes are persisted only when the quote literally occurs in the stored source text.
+- Source-family/duplicate metadata as a foundation for later source-independence analysis.
+- Best-first research frontier with semantic/structural scoring, depth ceiling, page budget and per-domain limits.
+- Recursive page-link discovery plus RSS/Atom and bounded sitemap discovery.
+- `robots.txt` respected by default.
+- Optional Crawl4AI fallback for JavaScript-heavy pages.
+- Persistent resume: run state, queries, plans, frontier leases, snapshots, claims, router health and sessions survive restart.
+- Multi-provider / multi-token / multi-model router.
+- Credential/token-level cooldown for authentication/quota failures; token+model deployment health for model/network failures; token+model+task penalties for refusal/JSON-format failures.
+- Dynamic cooldown TTL using upstream `Retry-After` / rate-limit reset hints when available, otherwise bounded exponential backoff.
+- Stale health observations decay after a configurable health-observation TTL.
+- Direct OpenAI-compatible driver plus optional LiteLLM driver for broad native provider support.
+- Progressive bundled skills: only task-relevant compact instructions enter model context.
+- Markdown, JSON, Mermaid research graph and evidence-matrix exports.
+- Local shell command support in TUI, disabled by default and persisted per session when enabled.
 
-## What v0.1 intentionally does **not** do
+## What it intentionally does not do yet
 
-The following belong to later stages rather than being half-implemented now:
+v0.3 is not a massive distributed crawler, not a vulnerability scanner, and not a private-person tracking system. It focuses on public-web research. Neo4j, Qdrant, Elasticsearch, Kafka, Kubernetes and large local models are deliberately absent from the default stack so the tool stays usable on an 8 GB VPS.
 
-- deep recursive web crawling/frontier scheduling;
-- Wayback/Common Crawl integration;
-- PDF/document pipeline;
-- entity/relationship knowledge graph;
-- claim/evidence verification graph;
-- provider capability routing and failover mesh;
-- GitHub/OpenAlex/RDAP/DNS/CT/ASN specialist adapters;
-- image/media intelligence;
-- long-horizon distributed workers;
-- active network scanning.
+The Stage 4+ roadmap adds archives, academic adapters, richer GitHub/public-code analysis, richer entity resolution and knowledge graphs without replacing the v0.3 data model.
 
-See [ROADMAP.md](ROADMAP.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+## Quick start
 
-## Architecture
+### Existing TraceWeave v0.1 repository
 
-```text
-                    ┌──────────────────────┐
-                    │  CLI / Textual TUI   │
-                    └──────────┬───────────┘
-                               │
-                         ResearchSpec
-                               │
-                    ┌──────────▼───────────┐
-                    │   ResearchEngine     │
-                    └──────┬───────┬──────┘
-                           │       │
-                     ┌─────▼──┐ ┌──▼──────────┐
-                     │Planner │ │SearchBackend│
-                     └─────┬──┘ └──────┬──────┘
-                           │           │
-                 optional LLM      SearXNG / DDGS
-                           │           │
-                           └─────┬─────┘
-                                 ▼
-                           SafeFetcher
-                                 │
-                    ┌────────────▼─────────────┐
-                    │ SQLite + source blobs   │
-                    │ runs/plans/queries      │
-                    │ sources/snapshots/events│
-                    └──────────────────────────┘
-```
-
-The LLM never owns the durable state. State lives in ordinary storage and can be inspected or resumed without reconstructing a chat conversation.
-
-## Requirements
-
-- Python **3.11+**.
-- Windows, Linux or macOS.
-- Internet access for real research.
-- Optional: an OpenAI-compatible API endpoint.
-- Optional: your own SearXNG instance.
-
-## Fast setup — Windows PowerShell
-
-The repository includes `bootstrap-stage1.ps1`. If you only downloaded that file, place it in an otherwise empty directory and run:
+Use the Stage 2+3 PowerShell patch delivered with this release:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\bootstrap-stage1.ps1
+.\TraceWeave-patch-v0.1-to-v0.3.ps1
 ```
 
-The script:
+The patch backs up files it replaces, preserves `.traceweave`, `.git`, `.env` and an existing `providers.toml`, migrates SQLite in place on first run, installs the updated package, runs compile/tests/smoke tests and executes `traceweave doctor`.
 
-1. writes the complete v0.1 repository into the current directory;
-2. creates `.env` from `.env.example`;
-3. creates `.venv` when Python is available;
-4. installs the package and development dependencies;
-5. compiles the source;
-6. runs the test suite;
-7. runs the offline smoke test.
-
-Use `-SkipInstall` if you only want to create the files:
-
-```powershell
-.\bootstrap-stage1.ps1 -SkipInstall
-```
-
-Use `-Force` only if you intentionally want to write into a non-empty directory.
-
-## Manual installation
-
-### Windows
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-pip install -e ".[dev]"
-Copy-Item .env.example .env
-traceweave doctor
-traceweave
-```
-
-### Ubuntu / Debian VPS
+### Manual installation / Ubuntu VPS
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git
+sudo apt install -y python3 python3-venv git
 
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-pip install -e '.[dev]'
-cp .env.example .env
+pip install -e .
+cp -n .env.example .env
+cp -n providers.example.toml providers.toml
 traceweave doctor
 traceweave
 ```
 
-A full-screen Textual TUI works over a normal SSH terminal. For a long unattended run, use the CLI inside `tmux` or `screen`:
+For broad native LLM provider support through LiteLLM:
 
 ```bash
-tmux new -s traceweave
-traceweave research "your topic" --mode deep --rounds 3
+pip install -e '.[providers]'
 ```
 
-## Configure a model
+For the optional Crawl4AI browser fallback:
 
-TraceWeave v0.1 deliberately uses a simple **OpenAI-compatible adapter** and does not require provider-native tool calling. Many providers and small routers expose this interface.
+```bash
+pip install -e '.[browser]'
+crawl4ai-setup
+```
 
-Edit `.env`:
+Then set:
 
 ```dotenv
-TRACEWEAVE_API_BASE=https://YOUR-PROVIDER.example/v1
-TRACEWEAVE_API_KEY=your-key
-TRACEWEAVE_MODEL=your-model-id
+TRACEWEAVE_BROWSER_FALLBACK=true
 ```
 
-The endpoint must support:
+The browser fallback is intentionally off by default because browser processes are substantially heavier than the normal HTTP path.
 
-```text
-POST {TRACEWEAVE_API_BASE}/chat/completions
-```
+## First use
 
-If these values are blank, TraceWeave remains usable: it runs deterministic plans and performs collection, provenance storage, resume and export; it simply does not generate an LLM research brief.
-
-### Why v0.1 does not rely on model tool-calling
-
-Small/free providers frequently differ in tool-call formats or do not implement tools at all. Search and fetching are therefore executed by TraceWeave itself. The model receives a bounded research state and returns only a plan or synthesis. Later versions can add capability-aware routing without rewriting the research engine.
-
-## Search configuration
-
-Default:
-
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=auto
-TRACEWEAVE_SEARXNG_URL=http://127.0.0.1:8080
-```
-
-`auto` first tries SearXNG. If it is unavailable or returns no results, it tries DDGS.
-
-For a stable VPS deployment, running your own SearXNG is preferable to depending on public instances. SearXNG exposes a JSON search API at `/search`; enable JSON output on your instance and point `TRACEWEAVE_SEARXNG_URL` to it.
-
-Force a backend:
-
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=searxng
-```
-
-or:
-
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=ddgs
-```
-
-DDGS is convenient for Stage 1 but may occasionally be rate-limited by its upstream search services.
-
-## First research
-
-TUI:
+Start the TUI:
 
 ```bash
 traceweave
 ```
 
-Then type a topic directly, or:
+The initial screen is deliberately small. Research panels appear only after a run is started or resumed.
+
+Examples:
 
 ```text
-/angle corporate history and technical infrastructure
-/mode standard
-/rounds 2
+/angle supply chain and technical infrastructure
+/mode deep
+/depth 3
+/budget 40
 /research Example Company
 ```
 
-CLI:
+Or just type a research question directly.
+
+CLI mode:
 
 ```bash
 traceweave research "Example Company" \
-  --angle "history and technical infrastructure" \
-  --mode standard \
-  --rounds 2
+  --mode deep \
+  --angle "supply chain and infrastructure" \
+  --depth 3 \
+  --frontier-budget 40
 ```
 
-List runs:
+## Provider routing
 
-```bash
-traceweave runs
+TraceWeave never requires a model to execute tools. Models receive bounded data and return text/JSON; the orchestrator executes search, fetch, storage and traversal itself. This keeps small or unstable OpenAI-compatible routers useful even when they have poor tool-call support.
+
+A routing candidate is not just a provider. It is:
+
+```text
+provider + credential/token + model
 ```
 
-Resume:
+For example, a provider with 3 tokens and 2 models can expose six independently routed deployments. Models may restrict which credentials they can use.
 
-```bash
-traceweave resume RUN_ID
+When Token A receives 429, TraceWeave cools Token A using `Retry-After` when supplied. Token B remains eligible. A refusal from Model X for task `replanning` penalizes only `Token + Model X + replanning`; it does not automatically poison the provider or the same model for unrelated tasks.
+
+See [`docs/PROVIDERS.md`](docs/PROVIDERS.md) and [`providers.example.toml`](providers.example.toml).
+
+## Source provenance and evidence
+
+Search results are persisted *before* TraceWeave tries to fetch the page. A fetch failure therefore does not erase the lead.
+
+A single canonical source may have many discovery paths:
+
+```text
+Query A ─┐
+Query B ─┼─> Source S17
+News    ─┤
+Web     ─┘
 ```
 
-Export:
+Each path remains separately stored. Fetched snapshots are content-addressed and the raw bytes are gzip-compressed alongside extracted text.
 
-```bash
-traceweave export RUN_ID
-traceweave export RUN_ID --format json
-traceweave export RUN_ID --format mermaid
+Stage 2 adds source analysis and grounded claims. A model-proposed claim is not stored as grounded evidence unless its evidence quote can be located exactly in the saved text snapshot.
+
+See [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
+
+## Best-first deep traversal
+
+`depth=5` is a ceiling, not an instruction to visit every fifth-level link. Every discovered URL receives a score from topic/angle overlap, anchor text, citation/document signals, same-domain context and obvious low-value path penalties. The highest-value frontier items are visited first until the run's budget is exhausted.
+
+This prevents combinatorial link explosions while still allowing obscure breadcrumb paths to change the direction of later planning rounds.
+
+See [`docs/FRONTIER.md`](docs/FRONTIER.md).
+
+## Persistent sessions
+
+TUI sessions remember:
+
+- active run
+- mode
+- angle
+- language
+- local-shell enabled/disabled state
+- onboarding state
+
+Commands:
+
+```text
+/session list
+/session new investigation-a
+/session switch SESSION_ID
+/session rename new-name
 ```
 
-See [USAGE.md](USAGE.md) for all interactive commands, shortcuts, storage details and troubleshooting.
+Sessions are separate from research runs. A session is UI/workspace state; a run is durable research state.
+
+During a long TUI run, `/pause` cancels the active research worker. The engine persists paused state, pending queries/frontier work remain durable, and `/resume` continues the same run. The session records the run id as soon as research begins rather than waiting for completion.
+
+## TUI shell
+
+Shell execution is **off by default**.
+
+```text
+/shell status
+/shell enable
+!git status
+!python --version
+/shell disable
+```
+
+Commands run locally with the operating-system permissions of the TraceWeave process. There is a timeout and output cap, but this is not a security sandbox. Do not enable it for untrusted users or expose a shell-enabled TUI through a shared service.
+
+## Directory layout
+
+```text
+src/traceweave/
+├── analysis.py             # triage + grounded claim extraction
+├── engine.py               # iterative orchestration
+├── exporter.py
+├── fetcher.py              # SSRF-safe HTTP + optional browser fallback
+├── frontier.py             # best-first recursive discovery
+├── planner.py
+├── storage.py              # durable SQLite schema + migrations
+├── providers/
+│   ├── config.py
+│   ├── drivers.py
+│   └── router.py
+├── search/
+├── prompts/                # role-specific system prompts
+├── skills/                 # progressively loaded task skills
+└── tui/
+```
 
 ## Data layout
 
-By default all runtime data is under `.traceweave/`:
+Default:
 
 ```text
 .traceweave/
 ├── traceweave.db
 ├── sources/
-│   └── ab/
-│       ├── <sha256>.html.gz
+│   └── 00000017/
+│       ├── <sha256>.raw.gz
 │       └── <sha256>.txt
-└── exports/
-    ├── <run-id>.md
-    └── <run-id>.json
+├── exports/
+├── logs/
+└── sessions/
 ```
 
-The database stores the relationship between a research run, a query, a source, and a stored snapshot. A source can be discovered by more than one query without duplicating its content blob.
+The SQLite database uses WAL mode. The raw API token value is never stored in router health tables; only configured credential ids are stored.
 
-## Security model in v0.1
-
-TraceWeave treats web pages as **untrusted data**, not instructions. The v0.1 fetcher also blocks obvious private/reserved network destinations, validates every redirect target, limits downloaded bytes and supports only public HTTP/HTTPS text/HTML collection.
-
-It is intended for public-web research. Do not use it to bypass access controls, authentication, paywalls or restrictions, and do not point it at systems you are not authorized to test.
-
-See [SECURITY.md](SECURITY.md).
-
-## Development
+## Tests
 
 ```bash
-pip install -e '.[dev]'
-python -m compileall -q src tests
-ruff check src tests
-pytest
+pytest -q
 python scripts/smoke_test.py
+python scripts/smoke_stage23.py
+python -m compileall -q src tests scripts
 ```
 
-Build package artifacts:
+The v0.3 test suite covers Stage-1 provenance compatibility, v0.1 schema migration, session persistence, grounded quote rejection, frontier priority/depth behavior, token-scoped 429 cooldown and task-scoped refusal failover.
 
-```bash
-python -m build
-```
+## Security and scope
 
-## Project status
+TraceWeave's default research/fetch stack is for public-web material. The HTTP fetcher blocks private/reserved network destinations, re-validates redirects, caps document sizes and respects `robots.txt` by default. Web content is treated as untrusted data in all model prompts.
 
-`0.1.0` is an alpha foundation. Its API and database schema can still change before 1.0. The important guarantee of this stage is architectural: the durable research state, source provenance and orchestration are outside the LLM context from day one.
+The project deliberately does not ship automatic credential harvesting, access-control bypass, private-person location inference or unrestricted remote scanning workflows. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [`LICENSE`](LICENSE).

@@ -1,90 +1,160 @@
-# TraceWeave v0.1 Usage Guide
+# TraceWeave v0.3 Usage Guide
 
-This guide covers the Stage-1 interface and operational behavior.
+This guide covers installation, migration from v0.1, TUI/CLI use, provider routing, sessions, evidence, traversal, exports and common operational checks.
 
-## 1. Starting the application
+## 1. Upgrade an existing v0.1 checkout
 
-Full-screen terminal UI:
+Place `TraceWeave-patch-v0.1-to-v0.3.ps1` in the repository root and run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\TraceWeave-patch-v0.1-to-v0.3.ps1
+```
+
+The patch preserves `.env`, `.git`, `.traceweave/` and an existing `providers.toml`; backs up files it replaces; applies the v0.3 overlay; installs dependencies unless disabled; initializes additive SQLite migrations; compiles the code; runs pytest and both smoke tests; then runs `traceweave doctor`.
+
+Useful patch switches:
+
+```powershell
+# Files only
+.\TraceWeave-patch-v0.1-to-v0.3.ps1 -SkipInstall -SkipTests
+
+# Include LiteLLM provider support
+.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithProviders
+
+# Include Crawl4AI browser fallback
+.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithBrowser
+
+# Both optional extras
+.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithFull
+```
+
+## 2. Fresh install
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -e .
+cp -n .env.example .env
+cp -n providers.example.toml providers.toml
+traceweave doctor
+traceweave
+```
+
+Optional broad provider support:
+
+```bash
+pip install -e '.[providers]'
+```
+
+Optional Crawl4AI:
+
+```bash
+pip install -e '.[browser]'
+crawl4ai-setup
+```
+
+## 3. First TUI session
+
+Run:
 
 ```bash
 traceweave
 ```
 
-or explicitly:
+Before a research request, TraceWeave intentionally shows only onboarding and the command input. The research workspace appears when there is meaningful content.
 
-```bash
-traceweave tui
+A simple start:
+
+```text
+/angle supply chain, partnerships and technical infrastructure
+/mode deep
+/depth 3
+/budget 40
+/research Example Company
 ```
 
-Normal CLI:
+You can also type a plain question without `/research`.
 
-```bash
-traceweave --help
+## 4. Iterative research behavior
+
+A deep run does not generate one giant immutable plan. It repeatedly executes:
+
+```text
+PLAN
+ → SEARCH
+ → persist discovery
+ → fetch/snapshot
+ → triage/evidence
+ → best-first link traversal
+ → assess gaps/leads
+ → RE-PLAN
+ → targeted SEARCH
+ → ...
 ```
 
-## 2. TUI layout
+Deep defaults to four rounds. The exact plan of every round is saved before execution, so resume continues unfinished work rather than inventing a new history.
 
-The UI contains three live panels:
+## 5. TUI commands
 
-- **PLAN / STATE** — current round objective, focus areas and generated queries.
-- **SOURCES** — sources as they are discovered, with source ID, type, title and domain.
-- **LIVE TRACE** — research events, fetch failures, round completion and exports.
-
-The command line at the bottom accepts either a plain research topic or a slash command.
-
-Textual also provides its built-in command palette with **Ctrl+P**.
-
-## 3. TUI commands
+### Research controls
 
 ```text
 /research TOPIC
-```
-
-Starts a new run.
-
-```text
 /angle TEXT
+/mode quick|standard|deep
+/rounds 1..10
+/depth 0..5
+/budget 0..500
+/language LANGUAGE_OR_ALL
 ```
 
-Changes the current research lens. The angle is supplied to the planner and synthesis layer.
+`depth` is a maximum recursive hop count. `budget` is the total number of recursive frontier pages allowed for the run; it does not include ordinary search-result discovery.
 
-```text
-/mode quick
-/mode standard
-/mode deep
-```
-
-Default round counts if `/rounds` is not set:
-
-- quick: 1
-- standard: 2
-- deep: 3
-
-```text
-/rounds 4
-```
-
-Overrides the round count for newly started research. v0.1 allows 1–8 rounds.
+### Run/data inspection
 
 ```text
 /runs
+/resume [RUN_ID]
+/pause
+/sources [RUN_ID]
+/claims [RUN_ID]
+/frontier [RUN_ID]
+/export [RUN_ID] [md|json|mermaid|evidence]
 ```
 
-Shows recent run IDs and statuses.
+### Provider/router
 
 ```text
-/resume
-/resume RUN_ID
+/providers
+/providers reload
+/router
+/doctor
 ```
 
-Resumes the latest run or a specific run.
+### Sessions
 
 ```text
-/export
-/export RUN_ID
+/session list
+/session new NAME
+/session switch SESSION_ID
+/session rename NAME
 ```
 
-Creates a Markdown export under `.traceweave/exports/`.
+### Local shell
+
+```text
+/shell status
+/shell enable
+!git status
+!python --version
+/shell disable
+```
+
+Shell execution is local, disabled by default and **not a sandbox**.
+
+### UI
 
 ```text
 /clear
@@ -92,292 +162,258 @@ Creates a Markdown export under `.traceweave/exports/`.
 /quit
 ```
 
-Utility commands.
+The input has command suggestions, command history with Up/Down, and is cleared after execution. Textual's `Ctrl+P` command palette remains available. The old bottom footer/helper bar was removed.
 
-## 4. Keyboard shortcuts
+## 6. CLI examples
 
-- `Ctrl+L` — focus command input.
-- `Ctrl+R` — resume latest run.
-- `Ctrl+E` — export latest run.
-- `Ctrl+K` — clear live log.
-- `Ctrl+Q` — quit.
-- `F1` — help.
-- `Ctrl+P` — Textual command palette.
-
-## 5. CLI research
+Quick research:
 
 ```bash
-traceweave research "renewable energy company X"
+traceweave research "Example Company" --mode quick
 ```
 
-With explicit controls:
+Deep research:
 
 ```bash
-traceweave research "renewable energy company X" \
-  --angle "ownership, projects, technology and historical changes" \
+traceweave research "Example Company" \
   --mode deep \
-  --rounds 3 \
+  --angle "ownership, technology and historical changes" \
+  --depth 3 \
+  --frontier-budget 50 \
   --language all
 ```
 
-## 6. What happens in each round
+Resume:
 
-For round 1:
-
-1. planner receives the ResearchSpec;
-2. planner creates a small set of diverse queries;
-3. each query is persisted as `pending`;
-4. search executes;
-5. every result is persisted immediately;
-6. the highest-ranked results are fetched within bounded concurrency;
-7. successful source snapshots are content-hashed and stored;
-8. query becomes `completed`;
-9. round becomes `completed`.
-
-Before round 2, the planner receives a compact state containing completed queries and the most relevant source capsules. It creates a new plan rather than repeating the first plan.
-
-If the process dies after the plan was saved but before all queries completed, a resume reuses the saved plan and only executes unfinished queries.
-
-## 7. Source provenance
-
-A result is not discarded merely because its page cannot be fetched.
-
-For every search discovery TraceWeave records:
-
-```text
-run ID
-source ID
-original URL
-canonical URL
-title
-domain
-search query
-search rank
-search engine / backend
-category (web/news)
-published date, when supplied
-raw search-result metadata
-discovery time
+```bash
+traceweave runs
+traceweave resume RUN_ID
 ```
 
-A successful fetch additionally records:
+Inspect evidence:
 
-```text
-fetch time
-final URL
-HTTP status
-content type
-SHA-256 hash
-compressed raw snapshot path
-extracted-text path
-page title
+```bash
+traceweave show RUN_ID
+traceweave claims RUN_ID
 ```
 
-This distinction is important: **discovery provenance** and **page snapshot evidence** are separate records.
+Router:
 
-## 8. Files on disk
+```bash
+traceweave providers
+traceweave providers --task planning
+traceweave providers --reload
+traceweave router-log --limit 100
+```
 
-The data directory can be moved:
+Exports:
+
+```bash
+traceweave export RUN_ID --format md
+traceweave export RUN_ID --format json
+traceweave export RUN_ID --format mermaid
+traceweave export RUN_ID --format evidence
+```
+
+## 7. Search configuration
+
+Default:
 
 ```dotenv
-TRACEWEAVE_DATA_DIR=/var/lib/traceweave
+TRACEWEAVE_SEARCH_BACKEND=auto
+TRACEWEAVE_SEARXNG_URL=http://127.0.0.1:8080
 ```
+
+`auto` tries SearXNG first, then DDGS. For a long-lived VPS, a self-hosted SearXNG instance is the preferred primary search interface.
+
+Search-result provenance is stored **before fetch**. TraceWeave preserves the query, rank, engine, category, publication metadata and raw normalized search result even if the page later fails to download.
+
+## 8. Provider mesh
+
+Copy:
+
+```bash
+cp providers.example.toml providers.toml
+```
+
+Tokens belong in environment variables, not TOML:
+
+```dotenv
+ROUTER_A_TOKEN_1=...
+ROUTER_A_TOKEN_2=...
+GROQ_API_KEY_A=...
+GEMINI_API_KEY_A=...
+```
+
+A candidate is:
+
+```text
+provider + credential/token + model
+```
+
+One provider can have many tokens and models. For example 3 tokens × 2 models may create six independently schedulable routes.
+
+Failure isolation:
+
+```text
+401 / 403 / 429
+  → token/credential cooldown
+
+network / timeout / 5xx / model mismatch
+  → token + model cooldown
+
+refusal / invalid structured JSON
+  → token + model + task cooldown
+```
+
+A failing token does not automatically disable other tokens belonging to that provider.
+
+TTL behavior:
+
+1. prefer provider `Retry-After` / recognized reset hints;
+2. otherwise use failure-class-specific exponential backoff;
+3. cap TTL so a transient error cannot poison a route forever;
+4. decay old health observations after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`.
+
+Read `docs/PROVIDERS.md` for full configuration.
+
+## 9. Evidence pipeline
+
+Every fetched source can be scored independently on:
+
+```text
+relevance
+importance
+novelty
+authority
+```
+
+Exact duplicates use SHA-256. Near duplicates use SimHash and are marked with `duplicate_of`; novelty is reduced rather than treating the copy as independent evidence.
+
+For model-extracted claims, TraceWeave requires an exact evidence quote. A claim is persisted as grounded only if that quote is found literally in the stored snapshot text, with verified offsets.
+
+Read `docs/EVIDENCE.md`.
+
+## 10. Deep traversal
+
+TraceWeave extracts ordinary links, citation/document-like links, RSS/Atom links and bounded sitemap candidates. Links enter a persistent best-first frontier.
+
+Priority considers topic/angle overlap, anchor/path signals, document/citation hints, same-domain context, depth and obvious low-value URL penalties. Per-domain limits and a total frontier budget prevent crawl explosions.
+
+`robots.txt` is respected by default:
+
+```dotenv
+TRACEWEAVE_RESPECT_ROBOTS=true
+```
+
+Read `docs/FRONTIER.md`.
+
+## 11. Browser fallback
+
+Default is normal HTTP collection. To opt into Crawl4AI for JS-heavy pages:
+
+```bash
+pip install -e '.[browser]'
+crawl4ai-setup
+```
+
+```dotenv
+TRACEWEAVE_BROWSER_FALLBACK=true
+TRACEWEAVE_BROWSER_MIN_TEXT_CHARS=500
+```
+
+On an 8 GB VPS keep browser concurrency conservative. Browser fallback should be exceptional, not the default path for every page.
+
+## 12. Persistent data
 
 Default:
 
 ```text
 .traceweave/
+├── traceweave.db
+├── sources/
+│   └── SOURCE_ID/
+│       ├── HASH.raw.gz
+│       └── HASH.txt
+└── exports/
 ```
 
-For an Ubuntu service account you might use:
-
-```bash
-sudo mkdir -p /var/lib/traceweave
-sudo chown "$USER":"$USER" /var/lib/traceweave
-```
-
-then set the environment variable.
-
-## 9. Search backends
-
-### auto
-
-Recommended for Stage 1:
+Move it with:
 
 ```dotenv
-TRACEWEAVE_SEARCH_BACKEND=auto
+TRACEWEAVE_DATA_DIR=/var/lib/traceweave
 ```
 
-Order:
+v0.3 migrations are additive and run when storage initializes. Back up `.traceweave/` before major upgrades anyway.
+
+## 13. Sessions vs runs
+
+A **run** is durable research state. A **session** is TUI workspace state.
+
+A session remembers the active run, angle, mode, language, onboarding and local-shell toggle. Closing the TUI does not delete either one.
+
+## 14. Configuration reference
+
+See `.env.example`, `providers.example.toml`, and `docs/CONFIGURATION.md`.
+
+Important operational variables include:
 
 ```text
-SearXNG → DDGS
+TRACEWEAVE_FETCH_CONCURRENCY
+TRACEWEAVE_ROUTER_MAX_ATTEMPTS
+TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS
+TRACEWEAVE_CLAIMS_MAX_SOURCES_PER_ROUND
+TRACEWEAVE_FRONTIER_MIN_SCORE
+TRACEWEAVE_FRONTIER_PER_DOMAIN_LIMIT
+TRACEWEAVE_BROWSER_FALLBACK
+TRACEWEAVE_SHELL_ENABLED
 ```
 
-### SearXNG
+## 15. Tests
 
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=searxng
-TRACEWEAVE_SEARXNG_URL=http://127.0.0.1:8080
-```
-
-The instance must allow `format=json`.
-
-### DDGS
-
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=ddgs
-```
-
-This requires no search API key, but upstream engines can change, block or rate-limit automated requests. Treat it as a practical Stage-1 fallback rather than a guaranteed long-term search infrastructure.
-
-## 10. LLM endpoint
-
-Stage 1 supports OpenAI-compatible chat completions:
-
-```dotenv
-TRACEWEAVE_API_BASE=https://provider.example/v1
-TRACEWEAVE_API_KEY=...
-TRACEWEAVE_MODEL=...
-```
-
-The model is used for two narrow responsibilities:
-
-- planning/re-planning;
-- final research brief.
-
-It does **not** execute search tools directly. This makes v0.1 usable with smaller routers that do not implement reliable tool calling.
-
-### No model configured
-
-This is valid.
-
-TraceWeave uses deterministic query plans and still performs:
-
-- iterative rounds;
-- search;
-- source preservation;
-- snapshots;
-- run history;
-- resume;
-- export.
-
-The final brief becomes a source inventory instead of an LLM synthesis.
-
-## 11. Resume behavior
-
-Possible statuses:
-
-```text
-created
-running
-paused
-failed
-completed
-```
-
-A Ctrl+C interruption in CLI leaves durable database state. In the TUI, cancelling the active worker marks the run paused when cancellation reaches the engine.
-
-Resume:
+Development setup:
 
 ```bash
-traceweave resume abc123def456
+pip install -e '.[dev]'
+python -m compileall -q src tests scripts
+ruff check src tests
+pytest
+python scripts/smoke_test.py
+python scripts/smoke_stage23.py
+python -m build
 ```
 
-Research plans are stored per round, so resuming does not ask the model to reconstruct the previous plan from chat history.
+The Stage 2/3 smoke test runs an offline fake search + fake model workflow through planning, search, snapshot, triage, grounded claim extraction, frontier traversal, re-planning and synthesis.
 
-## 12. Export
+## 16. Troubleshooting
 
-Markdown:
-
-```bash
-traceweave export RUN_ID
-```
-
-Contains:
-
-- run metadata;
-- research brief;
-- source inventory;
-- discovery query/rank/backend;
-- snapshot status;
-- event trail.
-
-JSON:
-
-```bash
-traceweave export RUN_ID --format json
-```
-
-Mermaid research-flow graph:
-
-```bash
-traceweave export RUN_ID --format mermaid
-```
-
-The `.mmd` file represents `run → round → query → discovered source` and can be rendered later without requiring a graph database in Stage 1. JSON is useful for later migrations and richer visualizers.
-
-## 13. Diagnostics
+### No usable model routes
 
 ```bash
 traceweave doctor
+traceweave providers
 ```
 
-Then test the project itself:
+Check that `providers.toml` exists and every `token_env` environment variable is actually set. TraceWeave can still collect using deterministic fallback behavior without a model, but model triage/claims/synthesis will be limited.
+
+### Route stuck in cooldown
 
 ```bash
-python -m compileall -q src tests
-pytest
-python scripts/smoke_test.py
+traceweave providers --task planning
+traceweave router-log
 ```
 
-## 14. Common problems
+Look at which scope failed. Do not rotate or delete all provider configuration because one token got a 429.
 
-### SearXNG gives HTTP 403/429 or non-JSON output
+### Search returns nothing
 
-Verify that your instance enables JSON output and is intended for API use. Try:
+Check SearXNG reachability. With `auto`, TraceWeave can fall back to DDGS, but public upstream engines may rate limit it.
+
+### Interrupted research
 
 ```bash
-curl 'http://127.0.0.1:8080/search?q=test&format=json'
+traceweave runs
+traceweave resume RUN_ID
 ```
 
-or temporarily use:
-
-```dotenv
-TRACEWEAVE_SEARCH_BACKEND=ddgs
-```
-
-### DDGS fails intermittently
-
-Its upstream search services can rate-limit or change behavior. Retry later or use your own SearXNG instance.
-
-### Model provider rejects JSON planning
-
-v0.1 parses a JSON object even if a provider wraps it in additional text. If the provider consistently returns invalid data, clear the three LLM environment variables and verify that deterministic mode works, then switch to a more compatible endpoint.
-
-### A source is present but `Fetched = no`
-
-This is expected when:
-
-- the page blocks the request;
-- DNS failed;
-- it redirects to a private/reserved destination;
-- it is not text/HTML in Stage 1;
-- it exceeds the configured byte limit;
-- it times out.
-
-The search-discovery record remains preserved.
-
-## 15. Operational recommendation for an 8 GB VPS
-
-Stage 1 is intentionally a single-process research app plus SQLite. Use conservative fetch concurrency (`3` by default). Do not add a browser worker, graph database, Redis or a local LLM yet.
-
-For overnight CLI research:
-
-```bash
-tmux new -s traceweave
-source .venv/bin/activate
-traceweave research "TOPIC" --mode deep --rounds 3
-```
-
-Detach with `Ctrl+B`, then `D`.
+Pending queries and abandoned frontier leases are durable.
