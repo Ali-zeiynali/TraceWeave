@@ -56,4 +56,4 @@ If the quote cannot be located, that claim is discarded by the current Stage-2 g
 traceweave export RUN_ID --format evidence
 ```
 
-produces an evidence matrix. Full JSON contains sources, discoveries, claims, frontier state and events.
+produces an evidence matrix. Full JSON contains sources, discoveries, claims, frontier state, archive captures, citation leads, entities, relationships, timeline events, research edges, and events.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from datetime import datetime, timezone
@@ -7,7 +8,9 @@ from dataclasses import dataclass
 
 from traceweave.config import Settings
 from traceweave.providers.base import LLMError, ProviderFailure
+from traceweave.providers.catalog import ModelCatalog
 from traceweave.providers.config import load_provider_config
+from traceweave.providers.presets import PRESETS, _token_envs, has_env_credentials
 from traceweave.providers.drivers import Deployment, call_litellm, call_openai_compat
 from traceweave.storage import Storage
 from traceweave.utils import extract_first_json_object
@@ -40,7 +43,11 @@ class ModelRouter:
     def __init__(self, settings: Settings, storage: Storage):
         self.settings = settings
         self.storage = storage
+        self.catalog = ModelCatalog(settings.data_dir / "catalog" / "models.json", settings.provider_catalog_ttl_seconds)
         self.deployments = self._build_deployments()
+        self._catalog_lock = asyncio.Lock()
+        self._catalog_failures: dict[str, int] = {}
+        self._catalog_retry_until: dict[str, float] = {}
 
     def _build_deployments(self) -> list[Deployment]:
         cfg = load_provider_config(self.settings)
@@ -66,7 +73,7 @@ class ModelRouter:
 
     @property
     def configured(self) -> bool:
-        return bool(self.deployments)
+        return bool(self.deployments) or has_env_credentials()
 
     def reload(self) -> int:
         """Reload providers.toml and token environment variables without resetting persisted health."""
@@ -74,6 +81,7 @@ class ModelRouter:
         return len(self.deployments)
 
     async def json(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> dict:
+        await self.ensure_catalogs(run_id=run_id)
         errors: list[str] = []
         tried: set[str] = set()
         for _ in range(self.settings.router_max_attempts):
@@ -102,6 +110,7 @@ class ModelRouter:
         raise LLMError("No healthy deployment completed the JSON task. " + " | ".join(errors[-4:]))
 
     async def text(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> str:
+        await self.ensure_catalogs(run_id=run_id)
         errors: list[str] = []
         tried: set[str] = set()
         for _ in range(self.settings.router_max_attempts):
@@ -124,6 +133,67 @@ class ModelRouter:
             self._record_success(dep, task, latency=latency, run_id=run_id)
             return text
         raise LLMError("No healthy deployment completed the text task. " + " | ".join(errors[-4:]))
+
+
+    async def ensure_catalogs(self, *, run_id: str | None = None, force: bool = False) -> dict[str, str]:
+        """Refresh dynamic model catalogs per credential when their cache TTL expires.
+
+        A failing /models endpoint is isolated to that provider+credential and receives its own
+        exponential retry window. Concurrent research tasks share one refresh lock so they do not
+        stampede unstable router endpoints. Token values are never persisted.
+        """
+        if not self.settings.provider_catalog_auto_sync and not force:
+            return {}
+        import os
+        async with self._catalog_lock:
+            results: dict[str, str] = {}
+            changed = False
+            now = time.time()
+            for pid, preset in PRESETS.items():
+                if not preset.dynamic_catalog:
+                    continue
+                token_specs = list(_token_envs(preset.env_prefix))
+                if not token_specs:
+                    continue
+                base = os.getenv(f"{preset.env_prefix}_BASE_URL", "").strip() or preset.base_url
+                for credential_id, token_env in token_specs:
+                    key = f"{pid}:{credential_id}"
+                    if not force:
+                        if not self.catalog.stale(pid, credential_id):
+                            continue
+                        if self._catalog_retry_until.get(key, 0) > now:
+                            continue
+                    token = os.getenv(token_env, "").strip()
+                    try:
+                        rows = await self.catalog.sync_provider(
+                            pid, credential_id, token=token, base_url=base,
+                            timeout=min(25.0, self.settings.llm_timeout_seconds),
+                        )
+                        results[key] = f"ok:{len(rows)}"
+                        self._catalog_failures.pop(key, None)
+                        self._catalog_retry_until.pop(key, None)
+                        changed = True
+                    except Exception as exc:
+                        failures = self._catalog_failures.get(key, 0) + 1
+                        self._catalog_failures[key] = failures
+                        retry = min(1800.0, 30.0 * (2 ** min(failures - 1, 6)))
+                        self._catalog_retry_until[key] = time.time() + retry
+                        results[key] = f"error:{type(exc).__name__}:retry={int(retry)}s"
+                        self.storage.event(
+                            run_id, "provider.catalog_failed",
+                            f"Model catalog refresh failed for {pid}/{credential_id}; retry in {int(retry)}s",
+                            {"provider": pid, "credential": credential_id, "error": str(exc)[:500], "retry_seconds": retry},
+                        )
+            if changed:
+                self.deployments = self._build_deployments()
+            return results
+
+    def primary_route(self, task: str = "planning") -> dict[str, str] | None:
+        candidate = self._pick(task, exclude=set())
+        if candidate is None:
+            return None
+        dep = candidate.deployment
+        return {"provider": dep.provider_id, "credential": dep.credential_id, "model": dep.model_name, "tier": str(dep.extra.get("tier", ""))}
 
     async def _call(self, dep: Deployment, *, system: str, user: str) -> str:
         if dep.driver == "openai_compat":
@@ -190,7 +260,7 @@ class ModelRouter:
         dep_state = self.storage.router_state("router_deployments", "deployment_key", dep.deployment_key) or {}
         task_state = self.storage.router_task_state(dep.deployment_key, task) or {}
 
-        credential_level = exc.kind in {"auth", "rate_limit"}
+        credential_level = exc.kind in {"auth", "quota", "rate_limit"}
         task_level = exc.kind in {"refusal", "json_format"}
         deployment_level = not credential_level and not task_level
 
@@ -245,6 +315,7 @@ class ModelRouter:
             return min(max(retry_after, 1.0), 86_400.0)
         base, cap = {
             "auth": (3600.0, 86_400.0),
+            "quota": (300.0, 21_600.0),
             "rate_limit": (30.0, 3600.0),
             "model_or_request": (600.0, 21_600.0),
             "timeout": (10.0, 180.0),

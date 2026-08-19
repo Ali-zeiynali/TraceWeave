@@ -2,51 +2,15 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from traceweave.config import Settings
+from traceweave.providers.catalog import ModelCatalog
+from traceweave.providers.presets import providers_from_env
 
 
-@dataclass(slots=True)
-class CredentialConfig:
-    id: str
-    token_env: str
-    enabled: bool = True
-
-    def token(self) -> str:
-        return os.getenv(self.token_env, "").strip()
-
-
-@dataclass(slots=True)
-class ModelConfig:
-    id: str
-    name: str
-    tasks: set[str] = field(default_factory=lambda: {"*"})
-    capabilities: set[str] = field(default_factory=set)
-    credentials: set[str] = field(default_factory=set)
-    priority: int = 100
-    weight: float = 1.0
-    temperature: float | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class ProviderConfig:
-    id: str
-    driver: str
-    base_url: str
-    enabled: bool
-    credentials: list[CredentialConfig]
-    models: list[ModelConfig]
-    headers: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class RouterFileConfig:
-    providers: list[ProviderConfig]
-
+from traceweave.providers.types import CredentialConfig, ModelConfig, ProviderConfig, RouterFileConfig
 
 def _strings(value: Any, default: list[str] | None = None) -> set[str]:
     if value is None:
@@ -58,7 +22,10 @@ def _strings(value: Any, default: list[str] | None = None) -> set[str]:
 
 def load_provider_config(settings: Settings) -> RouterFileConfig:
     path = Path(settings.provider_config)
-    providers: list[ProviderConfig] = []
+    catalog = ModelCatalog(settings.data_dir / "catalog" / "models.json", settings.provider_catalog_ttl_seconds)
+    # Built-in environment presets make the common path zero-config: API keys in .env are enough.
+    # Explicit providers.toml entries are merged by provider id and take precedence.
+    providers: list[ProviderConfig] = providers_from_env(catalog_models=catalog.load())
     if path.exists():
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
         for p in raw.get("providers", []):
@@ -78,12 +45,14 @@ def load_provider_config(settings: Settings) -> RouterFileConfig:
                     temperature=float(m["temperature"]) if "temperature" in m else None,
                     extra={k: v for k, v in m.items() if k not in known},
                 ))
-            providers.append(ProviderConfig(
+            explicit = ProviderConfig(
                 id=str(p["id"]), driver=str(p.get("driver", "openai_compat")),
                 base_url=str(p.get("base_url", "")).rstrip("/"), enabled=bool(p.get("enabled", True)),
                 credentials=creds, models=models,
                 headers={str(k): str(v) for k, v in (p.get("headers") or {}).items()},
-            ))
+            )
+            providers = [existing for existing in providers if existing.id != explicit.id]
+            providers.append(explicit)
 
     # Backward compatibility with Stage 1.
     if not providers and settings.api_base and settings.api_key and settings.model:

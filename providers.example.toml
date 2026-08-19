@@ -1,82 +1,62 @@
-# TraceWeave provider mesh (v0.3)
-# Copy to providers.toml and set the referenced environment variables.
-# Raw API keys are intentionally NOT stored in this file or in TraceWeave's SQLite database.
+# TraceWeave v0.5 provider overrides
+# -----------------------------------
+# Normally you DO NOT need this file. Built-in presets activate automatically from .env:
+#   GROQ_API_KEY / GROQ_API_KEY_2 / GROQ_API_KEY_3
+#   GEMINI_API_KEY ...
+#   MISTRAL_API_KEY ...
+#   OPENROUTER_API_KEY ...
+#   ZENMUX_API_KEY ...
+#   SEEKROUTER_API_KEY ...
+#   AGENTROUTER_API_KEY ...
 #
-# Routing unit = provider + credential/token + model.
-# 401/403/429 health is applied primarily to the credential/token, while model/request,
-# refusal/format, timeout, and upstream failures are isolated more narrowly.
-#
-# Task names currently used:
-# planning, replanning, triage, claim_extraction, synthesis, general
-#
-# Drivers:
-# - openai_compat: no extra package; for endpoints exposing POST /chat/completions
-# - litellm: optional `pip install "traceweave[providers]"`; gives broad native provider support
+# Use providers.toml only for a custom endpoint, a different model/task policy, or to override a built-in provider id.
+# Raw keys are NEVER placed here; reference an environment variable.
 
-# -------- Example: many tokens + many models on one OpenAI-compatible provider --------
+[[providers]]
+id = "custom-router"
+driver = "openai_compat"
+base_url = "https://router.example/v1"
+enabled = true
+
+[[providers.credentials]]
+id = "token-1"
+token_env = "CUSTOM_ROUTER_KEY_1"
+
+[[providers.credentials]]
+id = "token-2"
+token_env = "CUSTOM_ROUTER_KEY_2"
+
+[[providers.models]]
+id = "fast"
+name = "vendor/fast-model"
+tasks = ["triage", "claim_extraction", "entity_extraction"]
+capabilities = ["text", "json"]
+credentials = ["token-1", "token-2"]
+priority = 40
+weight = 1.0
+tier = "fast"
+
+[[providers.models]]
+id = "reasoner"
+name = "vendor/reasoning-model"
+tasks = ["planning", "replanning", "verification", "synthesis"]
+capabilities = ["text", "json", "long_context"]
+credentials = ["token-1"]
+priority = 10
+weight = 1.0
+tier = "strong"
+
+# LiteLLM driver example for a provider that is not OpenAI-compatible:
 # [[providers]]
-# id = "router-a"
-# driver = "openai_compat"
-# base_url = "https://your-router.example/v1"
+# id = "custom-litellm"
+# driver = "litellm"
+# base_url = ""
 # enabled = true
-#
 # [[providers.credentials]]
 # id = "token-1"
-# token_env = "ROUTER_A_TOKEN_1"
-#
-# [[providers.credentials]]
-# id = "token-2"
-# token_env = "ROUTER_A_TOKEN_2"
-#
+# token_env = "CUSTOM_LITELLM_KEY"
 # [[providers.models]]
-# id = "fast"
-# name = "your-fast-model-id"
-# tasks = ["triage", "claim_extraction"]
-# priority = 20
-# weight = 1.5
-#
-# [[providers.models]]
-# id = "reasoning"
-# name = "your-reasoning-model-id"
-# tasks = ["planning", "replanning", "synthesis"]
-# priority = 10
-# weight = 1.0
-
-# -------- Example: Groq through LiteLLM --------
-# [[providers]]
-# id = "groq"
-# driver = "litellm"
-# enabled = true
-# base_url = ""
-# [[providers.credentials]]
-# id = "groq-a"
-# token_env = "GROQ_API_KEY_A"
-# [[providers.credentials]]
-# id = "groq-b"
-# token_env = "GROQ_API_KEY_B"
-# [[providers.models]]
-# id = "groq-fast"
-# name = "groq/<MODEL_ID>"
-# tasks = ["triage", "claim_extraction", "planning"]
-# priority = 20
-
-# -------- Example: Gemini through LiteLLM --------
-# [[providers]]
-# id = "gemini"
-# driver = "litellm"
-# enabled = true
-# base_url = ""
-# [[providers.credentials]]
-# id = "gemini-a"
-# token_env = "GEMINI_API_KEY_A"
-# [[providers.models]]
-# id = "gemini-reasoning"
-# name = "gemini/<MODEL_ID>"
-# tasks = ["planning", "replanning", "synthesis"]
-# priority = 10
-
-# -------- Other LiteLLM examples --------
-# Model prefixes supported by LiteLLM include providers such as:
-# anthropic/<MODEL_ID>, mistral/<MODEL_ID>, cerebras/<MODEL_ID>,
-# openrouter/<MODEL_ID>, deepseek/<MODEL_ID>, xai/<MODEL_ID>, and many more.
-# Consult current LiteLLM provider docs before choosing a model id.
+# id = "model"
+# name = "provider/model"
+# tasks = ["*"]
+# priority = 50

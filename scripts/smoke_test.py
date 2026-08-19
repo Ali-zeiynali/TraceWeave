@@ -27,7 +27,7 @@ class Engine(ResearchEngine):
 async def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        settings = Settings(data_dir=root / "data")
+        settings = Settings(data_dir=root / "data", archives_enabled=False, academic_enabled=False, github_enabled=False, entity_graph_enabled=False, frontier_enabled=False)
         settings.ensure_dirs()
         storage = Storage(settings.db_path, settings.data_dir)
         storage.init()

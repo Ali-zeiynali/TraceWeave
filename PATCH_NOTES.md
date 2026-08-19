@@ -1,38 +1,30 @@
-# v0.1 → v0.3 Patch Notes
+# Patch Notes — v0.3 → v0.5
 
-This release intentionally applies Stage 2 and Stage 3 together.
+This patch is an in-place, additive upgrade. It preserves `.env`, `providers.toml`, `.git`, and `.traceweave` durable data.
 
-## Preserved by the patch
+## Added
 
-- `.traceweave/` research database, snapshots, exports and sessions
-- `.env`
-- `.git/`
-- an existing `providers.toml`
+- Stage 4: Wayback, Common Crawl, OpenAlex, Crossref, arXiv, GitHub public search, PDF parsing, citation snowballing.
+- Stage 5 foundation: entity, relationship, timeline and research-edge tables plus grounded GraphCurator.
+- Built-in provider presets for AgentRouter, SeekRouter, ZenMux, OpenRouter, Mistral, Gemini and Groq.
+- Up to three environment credentials/provider.
+- Credential-scoped dynamic model catalogs.
+- Periodic catalog refresh + per-token catalog retry backoff + async refresh lock.
+- Redesigned minimal TUI landing using Textual `CenterMiddle`; no `margin: auto`, no Footer.
+- Archive/citation/entity/timeline inspection commands and richer JSON/Mermaid exports.
+- Stage-4/5 integration smoke test.
 
-Files that the patch replaces are copied to `.traceweave-patch-backup/<timestamp>/` before overlay.
+## Router behavior changed
 
-## Additive database migration
+- 401/402/429 affect credential health.
+- 403 is treated as model/request/deployment scoped rather than automatically poisoning the credential.
+- refusal and JSON-format failures are task scoped.
+- catalog availability may differ across tokens on the same provider.
 
-The v0.3 storage initializer keeps all v0.1 core tables and adds columns/tables for evidence, frontier, sessions and router health. The migration tests construct a v0.1-style database and initialize it with the v0.3 storage layer.
+## Backup behavior
 
-A filesystem backup is still recommended before any software upgrade.
+The PowerShell patch creates a timestamped backup directory before replacing files. Existing TraceWeave DB/WAL/SHM files are copied there before migration.
 
-## Important behavior changes
+## Dependencies
 
-- Deep mode defaults to 4 plan/search rounds.
-- Stage 3 recursive traversal is best-first and budgeted rather than exhaustive breadth crawling.
-- Models no longer need tool calling.
-- Provider routing is `provider + token + model`, with narrower task health for refusals/format failures.
-- Search provenance remains stored before fetch.
-- The TUI footer is removed; initial empty panes are hidden behind onboarding.
-- Local shell is available but disabled by default.
-
-## Optional dependencies
-
-The base patch stays light. Use patch switches or install extras later:
-
-```bash
-pip install -e '.[providers]'   # LiteLLM driver
-pip install -e '.[browser]'     # Crawl4AI
-pip install -e '.[full]'        # both
-```
+Stage 4 installs `pypdf`. Browser/Crawl4AI and LiteLLM remain optional extras.

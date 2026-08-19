@@ -128,9 +128,17 @@ def claims(run_id: str, limit: int = 100) -> None:
 
 
 @app.command("providers")
-def providers(task: str = "general", reload: bool = typer.Option(False, "--reload", help="Reload providers.toml before display")) -> None:
+def providers(
+    task: str = "general",
+    reload: bool = typer.Option(False, "--reload", help="Reload provider presets/providers.toml before display"),
+    sync: bool = typer.Option(False, "--sync", help="Refresh credential-scoped /models catalogs before display"),
+) -> None:
     """Show provider/token/model routes and persistent health."""
     runtime = build_runtime();
+    if runtime.router and sync:
+        result = asyncio.run(runtime.router.ensure_catalogs(force=True))
+        runtime.router.reload()
+        console.print(f"[dim]Catalog sync: {result or 'nothing to refresh'}[/dim]")
     if reload and runtime.router:
         runtime.router.reload()
     table = Table(title=f"Provider routes (task={task})")
@@ -142,6 +150,39 @@ def providers(task: str = "general", reload: bool = typer.Option(False, "--reloa
         table.add_row(str(row["provider"]), str(row["credential"]), str(row["model"]), str(row["driver"]),
                       "yes" if row["healthy"] else "no", f"{row['cooldown_seconds']}s", str(row["successes"]),
                       str(row["failures"]), f"{row['latency']}s", str(row["tasks"]))
+    console.print(table)
+
+
+@app.command("archives")
+def archives(run_id: str, limit: int = 100) -> None:
+    """List Wayback/Common Crawl captures stored for a run."""
+    runtime = build_runtime(); table = Table(title=f"Archives — {run_id}")
+    for c in ("ID", "Source", "Engine", "Captured", "URL"):
+        table.add_column(c)
+    for row in runtime.storage.archive_captures_for_run(run_id, limit):
+        table.add_row(f"A{row['id']}", f"S{row['source_id']}", row['engine'], row['captured_at'], row['capture_url'][:100])
+    console.print(table)
+
+
+@app.command("entities")
+def entities(run_id: str, limit: int = 100) -> None:
+    """List grounded graph entities for a run."""
+    runtime = build_runtime(); table = Table(title=f"Entities — {run_id}")
+    for c in ("ID", "Type", "Confidence", "Name"):
+        table.add_column(c)
+    for row in runtime.storage.entities_for_run(run_id, limit):
+        table.add_row(f"E{row['id']}", row['entity_type'], f"{float(row['confidence']):.2f}", row['canonical_name'])
+    console.print(table)
+
+
+@app.command("timeline")
+def timeline(run_id: str, limit: int = 100) -> None:
+    """List claim-grounded timeline events."""
+    runtime = build_runtime(); table = Table(title=f"Timeline — {run_id}")
+    for c in ("When", "Source", "Confidence", "Event"):
+        table.add_column(c)
+    for row in runtime.storage.timeline_for_run(run_id, limit):
+        table.add_row(row['event_time'], f"S{row.get('source_id') or 0}", f"{float(row['confidence']):.2f}", row['label'][:120])
     console.print(table)
 
 
@@ -198,6 +239,10 @@ def doctor() -> None:
         ("Search backend", settings.search_backend, "ok"), ("SearXNG", settings.searxng_url, "configured"),
         ("Provider config", str(settings.provider_config), "present" if settings.provider_config.exists() else "missing"),
         ("Usable LLM routes", str(len(runtime.router.deployments) if runtime.router else 0), "optional" if not runtime.router else "ok"),
+        ("Stage 4 archives", str(settings.archives_enabled), "ok" if settings.archives_enabled else "disabled"),
+        ("Academic sources", str(settings.academic_enabled), "ok" if settings.academic_enabled else "disabled"),
+        ("GitHub public sources", str(settings.github_enabled), "ok" if settings.github_enabled else "disabled"),
+        ("Entity graph", str(settings.entity_graph_enabled), "ok" if settings.entity_graph_enabled else "disabled"),
         ("Browser fallback", str(settings.browser_fallback), "optional"),
         ("Respect robots", str(settings.respect_robots), "ok"),
     ]

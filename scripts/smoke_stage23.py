@@ -65,6 +65,7 @@ async def main() -> None:
         settings = Settings(
             data_dir=root / "data", triage_enabled=True, claims_enabled=True,
             sitemap_enabled=False, respect_robots=False, frontier_min_score=0.0,
+            archives_enabled=False, academic_enabled=False, github_enabled=False, entity_graph_enabled=False,
         )
         settings.ensure_dirs()
         storage = Storage(settings.db_path, settings.data_dir); storage.init()

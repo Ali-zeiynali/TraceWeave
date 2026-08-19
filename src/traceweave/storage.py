@@ -235,6 +235,107 @@ CREATE TABLE IF NOT EXISTS domain_state (
     PRIMARY KEY(run_id, domain)
 );
 
+
+CREATE TABLE IF NOT EXISTS archive_captures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    engine TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    capture_url TEXT NOT NULL,
+    mime TEXT NOT NULL DEFAULT '',
+    status_code INTEGER,
+    digest TEXT NOT NULL DEFAULT '',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    raw_path TEXT,
+    text_path TEXT,
+    content_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, source_id, engine, captured_at, capture_url)
+);
+
+CREATE TABLE IF NOT EXISTS source_stage_state (
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'done',
+    result_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY(run_id, source_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS citations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    target_url TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'url',
+    label TEXT NOT NULL DEFAULT '',
+    target_source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, source_id, target_url)
+);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    canonical_name TEXT NOT NULL,
+    entity_type TEXT NOT NULL DEFAULT 'unknown',
+    description TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(run_id, canonical_name, entity_type)
+);
+
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(entity_id, alias)
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    source_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    predicate TEXT NOT NULL,
+    target_entity_id INTEGER REFERENCES entities(id) ON DELETE CASCADE,
+    target_text TEXT NOT NULL DEFAULT '',
+    claim_id INTEGER REFERENCES claims(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, source_entity_id, predicate, target_entity_id, target_text, claim_id)
+);
+
+CREATE TABLE IF NOT EXISTS timeline_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    event_time TEXT NOT NULL,
+    label TEXT NOT NULL,
+    entity_id INTEGER REFERENCES entities(id) ON DELETE SET NULL,
+    claim_id INTEGER REFERENCES claims(id) ON DELETE SET NULL,
+    source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, event_time, label, claim_id)
+);
+
+CREATE TABLE IF NOT EXISTS research_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    from_type TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    to_type TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, from_type, from_id, relation, to_type, to_id)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
@@ -250,6 +351,13 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_source ON snapshots(source_id, fetched_
 CREATE INDEX IF NOT EXISTS idx_analysis_run ON source_analysis(run_id, relevance DESC);
 CREATE INDEX IF NOT EXISTS idx_claims_run ON claims(run_id, source_id);
 CREATE INDEX IF NOT EXISTS idx_frontier_run ON frontier(run_id, status, score DESC);
+CREATE INDEX IF NOT EXISTS idx_archive_run ON archive_captures(run_id, source_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_citations_run ON citations(run_id, source_id);
+CREATE INDEX IF NOT EXISTS idx_source_stage_run ON source_stage_state(run_id, source_id, stage);
+CREATE INDEX IF NOT EXISTS idx_entities_run ON entities(run_id, entity_type, canonical_name);
+CREATE INDEX IF NOT EXISTS idx_relationships_run ON relationships(run_id, source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_timeline_run ON timeline_events(run_id, event_time);
+CREATE INDEX IF NOT EXISTS idx_research_edges_run ON research_edges(run_id, from_type, to_type);
 CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);
 CREATE INDEX IF NOT EXISTS idx_router_attempts_time ON router_attempts(created_at);
 """
@@ -691,6 +799,170 @@ class Storage:
         with self.connect() as conn:
             conn.execute("INSERT OR IGNORE INTO domain_state(run_id,domain) VALUES (?,?)", (run_id, domain))
             conn.execute(f"UPDATE domain_state SET {field}=1 WHERE run_id=? AND domain=?", (run_id, domain))
+
+    def source_stage_state(self, run_id: str, source_id: int, stage: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM source_stage_state WHERE run_id=? AND source_id=? AND stage=?",
+                (run_id, source_id, stage),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def mark_source_stage(self, run_id: str, source_id: int, stage: str, *, status: str = "done",
+                          result_count: int = 0, error: str = "") -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO source_stage_state(run_id,source_id,stage,status,result_count,last_error,checked_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(run_id,source_id,stage) DO UPDATE SET
+                   status=excluded.status,result_count=excluded.result_count,last_error=excluded.last_error,checked_at=excluded.checked_at""",
+                (run_id, source_id, stage, status, int(result_count), error[:1000], utc_now()),
+            )
+
+    # ---------- Stage 4 archives / citations ----------
+    def add_archive_capture(self, run_id: str, source_id: int, *, engine: str, captured_at: str,
+                            capture_url: str, mime: str = "", status_code: int | None = None,
+                            digest: str = "", raw: dict[str, Any] | None = None) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO archive_captures(run_id,source_id,engine,captured_at,capture_url,mime,status_code,digest,raw_json,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (run_id, source_id, engine, captured_at, capture_url, mime, status_code, digest,
+                 json.dumps(raw or {}, ensure_ascii=False, default=str), utc_now()),
+            )
+            row = conn.execute(
+                "SELECT id FROM archive_captures WHERE run_id=? AND source_id=? AND engine=? AND captured_at=? AND capture_url=?",
+                (run_id, source_id, engine, captured_at, capture_url),
+            ).fetchone()
+        assert row is not None
+        return int(row["id"])
+
+    def save_archive_content(self, capture_id: int, *, raw: bytes, text: str, content_hash: str) -> None:
+        raw_rel = Path("artifacts") / "archives" / f"capture-{capture_id}.raw.gz"
+        text_rel = Path("artifacts") / "archives" / f"capture-{capture_id}.txt.gz"
+        (self.data_dir / raw_rel).parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(self.data_dir / raw_rel, "wb") as fh: fh.write(raw)
+        with gzip.open(self.data_dir / text_rel, "wt", encoding="utf-8") as fh: fh.write(text)
+        with self.connect() as conn:
+            conn.execute("UPDATE archive_captures SET raw_path=?,text_path=?,content_hash=? WHERE id=?",
+                         (str(raw_rel), str(text_rel), content_hash, capture_id))
+
+    def archive_captures_for_run(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM archive_captures WHERE run_id=? ORDER BY captured_at DESC LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def archive_text(self, capture_id: int) -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT text_path FROM archive_captures WHERE id=?", (capture_id,)).fetchone()
+        if not row or not row["text_path"]: return ""
+        try:
+            with gzip.open(self.data_dir / row["text_path"], "rt", encoding="utf-8") as fh: return fh.read()
+        except OSError: return ""
+
+    def add_citation(self, run_id: str, source_id: int, *, target_url: str, kind: str, label: str,
+                     target_source_id: int | None = None) -> int:
+        target_url = canonicalize_url(target_url)
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO citations(run_id,source_id,target_url,kind,label,target_source_id,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (run_id, source_id, target_url, kind, label, target_source_id, utc_now()),
+            )
+            if target_source_id is not None:
+                conn.execute("UPDATE citations SET target_source_id=? WHERE run_id=? AND source_id=? AND target_url=?",
+                             (target_source_id, run_id, source_id, target_url))
+            row = conn.execute("SELECT id FROM citations WHERE run_id=? AND source_id=? AND target_url=?",
+                               (run_id, source_id, target_url)).fetchone()
+        assert row is not None
+        return int(row["id"])
+
+    def citations_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM citations WHERE run_id=? ORDER BY id LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------- Stage 5 foundation: entities, relationships, timeline, research graph ----------
+    def upsert_entity(self, run_id: str, *, name: str, entity_type: str = "unknown", description: str = "",
+                      confidence: float = 0.5, aliases: list[str] | None = None) -> int:
+        clean = " ".join(name.split()).strip()
+        if not clean: raise ValueError("empty entity name")
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO entities(run_id,canonical_name,entity_type,description,confidence,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?) ON CONFLICT(run_id,canonical_name,entity_type) DO UPDATE SET
+                   description=CASE WHEN excluded.description!='' THEN excluded.description ELSE entities.description END,
+                   confidence=MAX(entities.confidence,excluded.confidence),updated_at=excluded.updated_at""",
+                (run_id, clean, entity_type or "unknown", description, confidence, now, now),
+            )
+            row = conn.execute("SELECT id FROM entities WHERE run_id=? AND canonical_name=? AND entity_type=?",
+                               (run_id, clean, entity_type or "unknown")).fetchone()
+            assert row is not None; eid = int(row["id"])
+            for alias in aliases or []:
+                alias = " ".join(alias.split()).strip()
+                if alias: conn.execute("INSERT OR IGNORE INTO entity_aliases(entity_id,alias,created_at) VALUES (?,?,?)", (eid, alias, now))
+        return eid
+
+    def add_relationship(self, run_id: str, *, source_entity_id: int, predicate: str,
+                         target_entity_id: int | None = None, target_text: str = "", claim_id: int | None = None,
+                         source_id: int | None = None, confidence: float = 0.5) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO relationships(run_id,source_entity_id,predicate,target_entity_id,target_text,claim_id,source_id,confidence,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (run_id, source_entity_id, predicate, target_entity_id, target_text, claim_id, source_id, confidence, utc_now()),
+            )
+            row = conn.execute(
+                """SELECT id FROM relationships WHERE run_id=? AND source_entity_id=? AND predicate=?
+                   AND target_entity_id IS ? AND target_text=? AND claim_id IS ?""",
+                (run_id, source_entity_id, predicate, target_entity_id, target_text, claim_id),
+            ).fetchone()
+        return int(row["id"]) if row else 0
+
+    def add_timeline_event(self, run_id: str, *, event_time: str, label: str, entity_id: int | None = None,
+                           claim_id: int | None = None, source_id: int | None = None, confidence: float = 0.5) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO timeline_events(run_id,event_time,label,entity_id,claim_id,source_id,confidence,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (run_id, event_time, label, entity_id, claim_id, source_id, confidence, utc_now()),
+            )
+            row = conn.execute("SELECT id FROM timeline_events WHERE run_id=? AND event_time=? AND label=? AND claim_id IS ?",
+                               (run_id, event_time, label, claim_id)).fetchone()
+        return int(row["id"]) if row else 0
+
+    def add_research_edge(self, run_id: str, *, from_type: str, from_id: str | int, relation: str,
+                          to_type: str, to_id: str | int, metadata: dict[str, Any] | None = None) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO research_edges(run_id,from_type,from_id,relation,to_type,to_id,metadata_json,created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (run_id, from_type, str(from_id), relation, to_type, str(to_id), json.dumps(metadata or {}, ensure_ascii=False, default=str), utc_now()),
+            )
+            row = conn.execute("SELECT id FROM research_edges WHERE run_id=? AND from_type=? AND from_id=? AND relation=? AND to_type=? AND to_id=?",
+                               (run_id, from_type, str(from_id), relation, to_type, str(to_id))).fetchone()
+        return int(row["id"]) if row else 0
+
+    def entities_for_run(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM entities WHERE run_id=? ORDER BY confidence DESC,canonical_name LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def relationships_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM relationships WHERE run_id=? ORDER BY id LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def timeline_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM timeline_events WHERE run_id=? ORDER BY event_time,id LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def research_edges_for_run(self, run_id: str, limit: int = 5000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM research_edges WHERE run_id=? ORDER BY id LIMIT ?", (run_id, limit)).fetchall()
+        return [dict(row) for row in rows]
 
     # ---------- sessions ----------
     def create_session(self, name: str = "default") -> str:

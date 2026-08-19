@@ -17,6 +17,11 @@ class Exporter:
         sources = self.storage.sources_for_run(run_id, 5000)
         claims = self.storage.claims_for_run(run_id, 5000)
         events = self.storage.events_for_run(run_id, 5000)
+        archives = self.storage.archive_captures_for_run(run_id, 5000)
+        citations = self.storage.citations_for_run(run_id, 5000)
+        entities = self.storage.entities_for_run(run_id, 5000)
+        relationships = self.storage.relationships_for_run(run_id, 5000)
+        timeline = self.storage.timeline_for_run(run_id, 5000)
         lines = [
             f"# TraceWeave research — {run['topic']}", "",
             f"- Run: `{run_id}`", f"- Status: `{run['status']}`", f"- Mode: `{run['mode']}`",
@@ -48,6 +53,14 @@ class Exporter:
             for d in discoveries:
                 lines.append(f"  - `{d['search_query']}` — rank {d['rank']}, {d['engine']}, {d['category']}")
             lines.extend(["", s.snippet.strip() or "_No search snippet stored._", ""])
+        lines.extend(["## Historical / specialist state", "",
+                      f"- Archive captures: {len(archives)}", f"- Citation leads: {len(citations)}",
+                      f"- Entities: {len(entities)}", f"- Relationships: {len(relationships)}", ""])
+        if timeline:
+            lines.extend(["## Timeline", ""])
+            for item in timeline[:250]:
+                lines.append(f"- `{item['event_time']}` {item['label']} [S{item.get('source_id') or 0}]")
+            lines.append("")
         lines.extend(["## Research trail", ""])
         for e in events:
             lines.append(f"- `{e['ts']}` **{e['kind']}** — {e['message']}")
@@ -76,6 +89,12 @@ class Exporter:
             "discoveries": self.storage.discoveries_for_run(run_id, 10000),
             "claims": self.storage.claims_for_run(run_id, 5000),
             "frontier": self.storage.frontier_for_run(run_id, 10000),
+            "archives": self.storage.archive_captures_for_run(run_id, 10000),
+            "citations": self.storage.citations_for_run(run_id, 10000),
+            "entities": self.storage.entities_for_run(run_id, 10000),
+            "relationships": self.storage.relationships_for_run(run_id, 10000),
+            "timeline": self.storage.timeline_for_run(run_id, 10000),
+            "research_edges": self.storage.research_edges_for_run(run_id, 20000),
             "events": self.storage.events_for_run(run_id, 10000),
         }
         path = self.export_dir / f"{run_id}.json"
@@ -118,6 +137,15 @@ class Exporter:
             if child:
                 relation = esc(str(item.get("relation") or "link"))
                 lines.append(f"  S{parent} -->|{relation}| S{child['source_id']}")
+        entities = self.storage.entities_for_run(run_id, 250)
+        relationships = self.storage.relationships_for_run(run_id, 500)
+        for ent in entities:
+            lines.append(f'  E{ent["id"]}(("{esc(ent["canonical_name"])}"))')
+        for rel in relationships:
+            if rel.get("target_entity_id"):
+                lines.append(f'  E{rel["source_entity_id"]} -->|{esc(rel["predicate"])}| E{rel["target_entity_id"]}')
+            if rel.get("source_id"):
+                lines.append(f'  S{rel["source_id"]} -.evidence.-> E{rel["source_entity_id"]}')
         path = self.export_dir / f"{run_id}.mmd"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path

@@ -17,3 +17,23 @@ tasks = ["triage", "synthesis"]
 name = "deep-traversal"
 file = "deep_traversal.md"
 tasks = ["replanning"]
+
+[[skills]]
+name = "archive-research"
+file = "archive_research.md"
+tasks = ["replanning", "synthesis"]
+
+[[skills]]
+name = "academic-research"
+file = "academic_research.md"
+tasks = ["planning", "replanning", "synthesis"]
+
+[[skills]]
+name = "citation-snowballing"
+file = "citation_snowballing.md"
+tasks = ["replanning", "synthesis"]
+
+[[skills]]
+name = "entity-graph"
+file = "entity_graph.md"
+tasks = ["entity_extraction", "replanning", "synthesis"]

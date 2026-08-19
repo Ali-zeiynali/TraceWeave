@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traceweave"
-version = "0.3.0"
-description = "Iterative evidence-first research with provider routing, durable provenance, and best-first deep traversal."
+version = "0.5.0"
+description = "Long-horizon evidence-first research with archives, specialist sources, credential-scoped routing, and durable research graphs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -32,8 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 providers = ["litellm>=1.75,<2"]
+stage4 = ["pypdf>=5,<7"]
 browser = ["crawl4ai>=0.8,<1"]
-full = ["litellm>=1.75,<2", "crawl4ai>=0.8,<1"]
+full = ["litellm>=1.75,<2", "crawl4ai>=0.8,<1", "pypdf>=5,<7"]
 dev = [
   "build>=1.2,<2",
   "pytest>=8,<10",

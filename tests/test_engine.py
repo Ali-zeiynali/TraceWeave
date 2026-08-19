@@ -37,6 +37,8 @@ async def test_plan_search_replan_and_resumeable_state(tmp_path: Path):
     settings = Settings(
         data_dir=tmp_path / "data",
         search_backend="ddgs",
+        archives_enabled=False, academic_enabled=False, github_enabled=False,
+        entity_graph_enabled=False, frontier_enabled=False,
     )
     settings.ensure_dirs()
     storage = Storage(settings.db_path, settings.data_dir)

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import ipaddress
 import socket
+from io import BytesIO
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit
 
@@ -104,7 +105,30 @@ def _extract(raw: bytes, content_type: str, base_url: str) -> tuple[str, str, li
     ctype = content_type.lower()
     if "html" in ctype:
         return _extract_html(raw, base_url)
+    if "pdf" in ctype or base_url.casefold().split("?", 1)[0].endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise FetchError("PDF extraction requires: pip install 'traceweave[stage4]'") from exc
+        try:
+            reader = PdfReader(BytesIO(raw), strict=False)
+            pages = []
+            for page in reader.pages[:500]:
+                text = page.extract_text() or ""
+                if text.strip():
+                    pages.append(text.strip())
+            title = ""
+            if reader.metadata:
+                title = str(getattr(reader.metadata, "title", "") or "")
+            return "\n\n".join(pages), title, [], []
+        except Exception as exc:
+            raise FetchError(f"PDF parse failed: {exc}") from exc
     return raw.decode("utf-8", errors="replace"), "", [], []
+
+
+def extract_payload(raw: bytes, content_type: str, base_url: str) -> tuple[str, str, list[PageLink], list[str]]:
+    """Extract stored/fetched bytes using the same bounded document parser as live fetches."""
+    return _extract(raw, content_type, base_url)
 
 
 class SafeFetcher:
@@ -113,12 +137,13 @@ class SafeFetcher:
         self.max_bytes = max_bytes
         self.user_agent = user_agent
 
-    async def fetch(self, url: str, max_redirects: int = 5, accept: str | None = None) -> FetchResult:
+    async def fetch(self, url: str, max_redirects: int = 5, accept: str | None = None, max_bytes: int | None = None) -> FetchResult:
         current = url
         headers = {
             "User-Agent": self.user_agent,
             "Accept": accept or "text/html,application/xhtml+xml,application/xml;q=0.8,text/plain;q=0.7,*/*;q=0.1",
         }
+        byte_limit = int(max_bytes or self.max_bytes)
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
             for _ in range(max_redirects + 1):
                 await _validate_public_url(current)
@@ -133,15 +158,15 @@ class SafeFetcher:
                         response.raise_for_status()
                         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
                         if content_type and not (
-                            content_type.startswith("text/") or "html" in content_type or "xml" in content_type or "json" in content_type
+                            content_type.startswith("text/") or "html" in content_type or "xml" in content_type or "json" in content_type or "pdf" in content_type
                         ):
                             raise FetchError(f"Unsupported content type: {content_type}")
                         chunks: list[bytes] = []
                         size = 0
                         async for chunk in response.aiter_bytes():
                             size += len(chunk)
-                            if size > self.max_bytes:
-                                raise FetchError(f"Document exceeds {self.max_bytes} bytes")
+                            if size > byte_limit:
+                                raise FetchError(f"Document exceeds {byte_limit} bytes")
                             chunks.append(chunk)
                         raw = b"".join(chunks)
                         final_url = str(response.url)

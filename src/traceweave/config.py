@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     fetch_timeout_seconds: float = 20.0
     fetch_max_bytes: int = 3_000_000
     fetch_concurrency: int = Field(default=4, ge=1, le=16)
-    user_agent: str = "TraceWeave/0.3 (+https://github.com/traceweave/traceweave)"
+    user_agent: str = "TraceWeave/0.5 (+https://github.com/traceweave/traceweave)"
     respect_robots: bool = True
 
     provider_config: Path = Path("providers.toml")
@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.15
     router_max_attempts: int = Field(default=6, ge=1, le=20)
     router_health_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    provider_catalog_ttl_seconds: int = Field(default=21_600, ge=300, le=604_800)
+    provider_catalog_auto_sync: bool = True
 
     # Legacy single OpenAI-compatible endpoint; automatically converted to one router deployment.
     api_base: str = ""
@@ -44,6 +46,25 @@ class Settings(BaseSettings):
     browser_fallback: bool = False
     browser_min_text_chars: int = Field(default=500, ge=0, le=10000)
 
+    # Stage 4 specialist source adapters. All are passive/public-web only.
+    archives_enabled: bool = True
+    wayback_enabled: bool = True
+    commoncrawl_enabled: bool = True
+    academic_enabled: bool = True
+    github_enabled: bool = True
+    pdf_enabled: bool = True
+    specialist_queries_per_round: int = Field(default=3, ge=0, le=12)
+    specialist_results_per_query: int = Field(default=5, ge=1, le=20)
+    archive_sources_per_round: int = Field(default=4, ge=0, le=20)
+    archive_captures_per_source: int = Field(default=3, ge=1, le=10)
+    pdf_max_bytes: int = Field(default=20_000_000, ge=1_000_000, le=100_000_000)
+    github_token: str = ""
+    openalex_mailto: str = ""
+
+    # Stage 5 foundation.
+    entity_graph_enabled: bool = True
+    entity_sources_per_round: int = Field(default=10, ge=0, le=50)
+
     shell_enabled: bool = False
     shell_timeout_seconds: float = Field(default=30.0, ge=1, le=300)
     shell_max_output_chars: int = Field(default=20_000, ge=1000, le=200_000)
@@ -58,5 +79,5 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("sources", "exports", "sessions", "logs"):
+        for name in ("sources", "exports", "sessions", "logs", "artifacts", "catalog"):
             (self.data_dir / name).mkdir(parents=True, exist_ok=True)

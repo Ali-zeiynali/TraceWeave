@@ -1,28 +1,30 @@
 # Changelog
 
-## 0.3.0
+## 0.5.0 — 2026-08-19
 
 ### Added
-- Stage 2 evidence triage and grounded claim extraction.
-- SimHash near-duplicate handling and source-family metadata.
-- Stage 3 best-first durable research frontier.
-- RSS/Atom and bounded sitemap discovery.
-- robots.txt policy and optional Crawl4AI browser fallback.
-- Multi-provider / multi-token / multi-model routing.
-- Credential-, deployment- and task-scoped dynamic cooldown/failover.
-- Persistent router attempt logs without raw API keys.
-- Persistent TUI sessions.
-- Onboarding-first UI; research panels remain hidden before work exists.
-- Command completion/history and disabled-by-default local shell.
-- Progressive task skill registry.
-- Evidence matrix export.
-- v0.1 in-place SQLite migration.
+- Wayback and Common Crawl historical source adapters.
+- OpenAlex, Crossref and arXiv academic discovery.
+- Public GitHub repository/issue discovery.
+- Bounded PDF parsing with pypdf.
+- DOI/arXiv/public-URL citation snowballing.
+- Grounded entity/relationship/timeline graph foundation.
+- Research-edge provenance graph.
+- Built-in seven-provider mesh with up to three credentials each.
+- Per-credential dynamic model catalogs and zero-price filtering for OpenRouter/ZenMux dynamic catalogs.
+- Periodic catalog refresh and isolated refresh backoff.
+- Minimal centered TUI landing and compact workspace.
 
 ### Changed
-- Deep mode defaults to four iterative rounds.
-- Footer shortcut bar removed from the TUI.
-- Source summary selects the highest-ranked/earliest discovery path rather than lexicographic engine values.
-- Provider tools are orchestrator-owned; LLM tool-calling is not required.
+- Provider config types separated from presets to prevent circular imports.
+- Model/request 403 failures are deployment scoped.
+- Re-planning receives compact archive/citation/graph/frontier state.
+- Synthesis receives historical and graph context.
+- Successful archive checks are durable and not repeated every round.
 
-## 0.1.0
-- Initial iterative research core.
+### Fixed
+- Removed the Textual CSS `margin: auto` onboarding pattern that is not accepted by current Textual CSS.
+- Preserved token health independently from model/task failures.
+
+## 0.3.0
+- Evidence/triage, best-first traversal, multi-provider/token router, sessions and durable pause/resume.

@@ -9,11 +9,13 @@ from traceweave.analysis import EvidenceAnalyzer
 from traceweave.config import Settings
 from traceweave.fetcher import BrowserFetcher, FetchError, FetchResult, SafeFetcher
 from traceweave.frontier import FrontierManager
+from traceweave.graph import GraphCurator
 from traceweave.models import ProgressEvent, ResearchSpec, SourceView
 from traceweave.planner import Planner
 from traceweave.providers.base import LLMError, LLMProvider
 from traceweave.search.base import SearchBackend, SearchError
 from traceweave.storage import Storage
+from traceweave.sources.manager import SpecialistManager
 from traceweave.skills import SkillRegistry
 
 ProgressCallback = Callable[[ProgressEvent], Awaitable[None] | None]
@@ -36,6 +38,8 @@ class ResearchEngine:
             storage, self.fetcher, user_agent=settings.user_agent, respect_robots=settings.respect_robots
         )
         self.analyzer = EvidenceAnalyzer(storage, provider)
+        self.specialists = SpecialistManager(settings, storage, self.fetcher)
+        self.graph = GraphCurator(storage, provider)
         self.skills = SkillRegistry()
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
 
@@ -93,7 +97,7 @@ class ResearchEngine:
                 plan = await self.planner.replan(
                     spec, round_no=round_no, completed_queries=self.storage.completed_queries(run_id),
                     sources=self.storage.sources_for_run(run_id, limit=60), claims=self.storage.claims_for_run(run_id, 80),
-                    run_id=run_id,
+                    research_state=self._research_state(run_id), run_id=run_id,
                 )
             self.storage.save_plan(run_id, round_no, plan)
         await self._emit(
@@ -105,10 +109,42 @@ class ResearchEngine:
         for query in self.storage.pending_queries(run_id, round_no):
             await self._search_query(run_id, spec, round_no, query)
 
+        # Stage 4: specialist sources are independent from generic search and may fail without killing the run.
+        specialist = await self.specialists.discover(run_id, spec, plan, round_no)
+        for warning in specialist.errors or []:
+            await self._emit(run_id, "specialist.failed", warning, round=round_no)
+        if specialist.academic or specialist.code:
+            await self._emit(run_id, "specialists.discovered",
+                             f"Specialist discovery: academic={specialist.academic} code={specialist.code}",
+                             academic=specialist.academic, code=specialist.code, round=round_no)
+            await self._fetch_specialist_sources(run_id, spec)
+
         await self._analyze_new_sources(run_id, spec, round_no)
+        if self.settings.archives_enabled and spec.mode != "quick":
+            archive_count = await self.specialists.archive_top_sources(run_id, spec)
+            if archive_count:
+                await self._emit(run_id, "archives.discovered", f"Discovered {archive_count} historical captures", count=archive_count, round=round_no)
+                await self._fetch_specialist_sources(run_id, spec, categories={"archive"})
+                await self._analyze_new_sources(run_id, spec, round_no)
         if self.settings.frontier_enabled and spec.resolved_frontier_pages() > 0 and spec.resolved_depth() > 0:
             await self._crawl_frontier(run_id, spec, round_no)
             await self._analyze_new_sources(run_id, spec, round_no)
+
+        if self.settings.entity_graph_enabled:
+            graph_stats = await self.graph.curate(run_id, spec)
+            await self._emit(run_id, "graph.curated",
+                             f"Graph: entities={graph_stats['entities']} relationships={graph_stats['relationships']} timeline={graph_stats['timeline']}",
+                             **graph_stats, round=round_no)
+
+    def _research_state(self, run_id: str) -> dict[str, object]:
+        return {
+            "archive_captures": len(self.storage.archive_captures_for_run(run_id, 5000)),
+            "citations": len(self.storage.citations_for_run(run_id, 5000)),
+            "entities": len(self.storage.entities_for_run(run_id, 5000)),
+            "relationships": len(self.storage.relationships_for_run(run_id, 5000)),
+            "timeline_events": len(self.storage.timeline_for_run(run_id, 5000)),
+            "frontier": self.storage.frontier_stats(run_id),
+        }
 
     async def _search_query(self, run_id: str, spec: ResearchSpec, round_no: int, query: str) -> None:
         await self._emit(run_id, "search.started", f"Searching: {query}", query=query, round=round_no)
@@ -121,6 +157,8 @@ class ResearchEngine:
         fetch_jobs: list[tuple[int, str]] = []
         for rank, result in enumerate(results, start=1):
             source_id = self.storage.add_search_result(run_id, query, rank, result)
+            self.storage.add_research_edge(run_id, from_type="query", from_id=query, relation="discovered", to_type="source", to_id=source_id,
+                                           metadata={"round": round_no, "rank": rank, "engine": result.engine, "category": result.category})
             await self._emit(
                 run_id, "source.discovered", result.title or result.url, source_id=source_id, url=result.url,
                 title=result.title, engine=result.engine, category=result.category,
@@ -139,7 +177,8 @@ class ResearchEngine:
                 await self._emit(run_id, "source.robots_blocked", f"robots.txt disallows S{source_id}", source_id=source_id, url=url)
                 return None
             try:
-                result = await self.fetcher.fetch(url)
+                max_bytes = self.settings.pdf_max_bytes if self.settings.pdf_enabled and url.casefold().split("?", 1)[0].endswith(".pdf") else None
+                result = await self.fetcher.fetch(url, max_bytes=max_bytes)
                 if (
                     self.settings.browser_fallback and "html" in result.content_type.casefold()
                     and len(result.text) < self.settings.browser_min_text_chars
@@ -156,6 +195,9 @@ class ResearchEngine:
                     content_type=result.content_type, content_hash=result.content_hash, raw=result.raw,
                     text=result.text, extracted_title=result.title, simhash=result.simhash,
                 )
+                citation_added = 0
+                if spec.resolved_depth() > 0 and result.text:
+                    citation_added = self.specialists.snowball_citations(run_id, spec, source_id, result.text, depth=min(depth + 1, spec.resolved_depth()))
                 added = 0
                 if depth < spec.resolved_depth():
                     added = self.frontier.add_page_links(
@@ -173,12 +215,26 @@ class ResearchEngine:
                 await self._emit(
                     run_id, "source.fetched", f"Fetched source S{source_id}", source_id=source_id,
                     url=result.final_url, bytes=len(result.raw), content_type=result.content_type,
-                    links_added=added, depth=depth,
+                    links_added=added, citations_added=citation_added, depth=depth,
                 )
                 return result
             except FetchError as exc:
                 await self._emit(run_id, "source.fetch_failed", f"Could not fetch S{source_id}: {exc}", source_id=source_id, url=url)
                 return None
+
+    async def _fetch_specialist_sources(self, run_id: str, spec: ResearchSpec, categories: set[str] | None = None) -> None:
+        categories = categories or {"academic", "code", "archive"}
+        jobs: list[tuple[int, str]] = []
+        for source in self.storage.sources_for_run(run_id, 250):
+            if source.category not in categories or self.storage.latest_snapshot(source.id) is not None:
+                continue
+            if not source.url.startswith(("http://", "https://")):
+                continue
+            jobs.append((source.id, source.url))
+            if len(jobs) >= max(4, self.settings.specialist_results_per_query * 3):
+                break
+        if jobs:
+            await asyncio.gather(*(self._fetch_source(run_id, spec, sid, url, depth=0) for sid, url in jobs))
 
     async def _crawl_frontier(self, run_id: str, spec: ResearchSpec, round_no: int) -> None:
         stats = self.storage.frontier_stats(run_id)
@@ -298,6 +354,20 @@ class ResearchEngine:
                  "quote": c.get("quote", "")[:500], "verified_span": bool(c.get("verified_span"))}
                 for c in claims[:100]
             ],
+            "historical_captures": [
+                {"source_id": a["source_id"], "engine": a["engine"], "captured_at": a["captured_at"], "capture_url": a["capture_url"]}
+                for a in self.storage.archive_captures_for_run(run_id, 80)
+            ],
+            "citation_leads": [
+                {"source_id": c["source_id"], "kind": c["kind"], "target_url": c["target_url"]}
+                for c in self.storage.citations_for_run(run_id, 80)
+            ],
+            "entities": [
+                {"id": e["id"], "name": e["canonical_name"], "type": e["entity_type"], "confidence": e["confidence"]}
+                for e in self.storage.entities_for_run(run_id, 100)
+            ],
+            "relationships": self.storage.relationships_for_run(run_id, 120),
+            "timeline": self.storage.timeline_for_run(run_id, 120),
         }
         from importlib.resources import files
         system = files("traceweave.prompts").joinpath("synthesis.txt").read_text(encoding="utf-8")

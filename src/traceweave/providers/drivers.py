@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,9 +43,13 @@ def parse_retry_after(headers: dict[str, str]) -> float | None:
     raw = lower.get("retry-after")
     if raw:
         try:
-            return max(0.0, float(raw))
+            value = float(raw)
+            return max(0.0, value - time.time()) if value > 10_000_000 else max(0.0, value)
         except ValueError:
-            pass
+            try:
+                return max(0.0, parsedate_to_datetime(raw).timestamp() - time.time())
+            except (TypeError, ValueError, OverflowError):
+                pass
     candidates: list[float] = []
     for key in ("x-ratelimit-reset", "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
         value = lower.get(key)
@@ -52,6 +58,13 @@ def parse_retry_after(headers: dict[str, str]) -> float | None:
         parsed = _duration_seconds(value)
         if parsed is not None:
             candidates.append(parsed)
+            continue
+        try:
+            epoch = float(value)
+            if epoch > 10_000_000:
+                candidates.append(max(0.0, epoch - time.time()))
+        except ValueError:
+            pass
     return max(candidates) if candidates else None
 
 
@@ -73,11 +86,14 @@ def _duration_seconds(value: str) -> float | None:
 
 
 def classify_status(status: int | None) -> str:
-    if status in {401, 403}:
+    if status == 401:
         return "auth"
+    if status == 402:
+        return "quota"
     if status == 429:
         return "rate_limit"
-    if status in {400, 404, 405, 422}:
+    # 403 is frequently model/project permission specific (not a dead API key), so do not poison the whole credential.
+    if status in {400, 403, 404, 405, 422}:
         return "model_or_request"
     if status is not None and 500 <= status <= 599:
         return "upstream"

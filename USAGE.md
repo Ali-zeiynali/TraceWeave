@@ -1,212 +1,140 @@
-# TraceWeave v0.3 Usage Guide
+# TraceWeave v0.5 — Usage Guide
 
-This guide covers installation, migration from v0.1, TUI/CLI use, provider routing, sessions, evidence, traversal, exports and common operational checks.
-
-## 1. Upgrade an existing v0.1 checkout
-
-Place `TraceWeave-patch-v0.1-to-v0.3.ps1` in the repository root and run:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\TraceWeave-patch-v0.1-to-v0.3.ps1
-```
-
-The patch preserves `.env`, `.git`, `.traceweave/` and an existing `providers.toml`; backs up files it replaces; applies the v0.3 overlay; installs dependencies unless disabled; initializes additive SQLite migrations; compiles the code; runs pytest and both smoke tests; then runs `traceweave doctor`.
-
-Useful patch switches:
-
-```powershell
-# Files only
-.\TraceWeave-patch-v0.1-to-v0.3.ps1 -SkipInstall -SkipTests
-
-# Include LiteLLM provider support
-.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithProviders
-
-# Include Crawl4AI browser fallback
-.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithBrowser
-
-# Both optional extras
-.\TraceWeave-patch-v0.1-to-v0.3.ps1 -WithFull
-```
-
-## 2. Fresh install
+## 1. Install
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-pip install -e .
-cp -n .env.example .env
-cp -n providers.example.toml providers.toml
-traceweave doctor
-traceweave
+python -m venv .venv
+source .venv/bin/activate      # Windows: .\.venv\Scripts\Activate.ps1
+pip install -e '.[stage4]'
+cp .env.example .env           # Windows: Copy-Item .env.example .env
 ```
 
-Optional broad provider support:
+Add only the API keys you actually have. TraceWeave also works without an LLM route: deterministic planning and collection remain available, but model triage/claim extraction/synthesis are reduced.
 
-```bash
-pip install -e '.[providers]'
-```
-
-Optional Crawl4AI:
-
-```bash
-pip install -e '.[browser]'
-crawl4ai-setup
-```
-
-## 3. First TUI session
-
-Run:
+## 2. First launch
 
 ```bash
 traceweave
 ```
 
-Before a research request, TraceWeave intentionally shows only onboarding and the command input. The research workspace appears when there is meaningful content.
+The landing screen intentionally contains no empty plan/source/log panels. It shows:
 
-A simple start:
+- centered research input
+- current working-folder name
+- currently selected planning provider/model (or deterministic/catalog discovery)
+- resumable run hint when a session has one
+- a randomized tip
 
-```text
-/angle supply chain, partnerships and technical infrastructure
-/mode deep
-/depth 3
-/budget 40
-/research Example Company
-```
+Type a topic and press Enter. The research workspace is mounted visually only after a run starts or you explicitly resume one.
 
-You can also type a plain question without `/research`.
-
-## 4. Iterative research behavior
-
-A deep run does not generate one giant immutable plan. It repeatedly executes:
-
-```text
-PLAN
- → SEARCH
- → persist discovery
- → fetch/snapshot
- → triage/evidence
- → best-first link traversal
- → assess gaps/leads
- → RE-PLAN
- → targeted SEARCH
- → ...
-```
-
-Deep defaults to four rounds. The exact plan of every round is saved before execution, so resume continues unfinished work rather than inventing a new history.
-
-## 5. TUI commands
-
-### Research controls
+## 3. Research controls
 
 ```text
 /research TOPIC
 /angle TEXT
 /mode quick|standard|deep
-/rounds 1..10
+/rounds N
 /depth 0..5
-/budget 0..500
-/language LANGUAGE_OR_ALL
+/budget N
+/language CODE
+/pause
+/resume [RUN_ID]
 ```
 
-`depth` is a maximum recursive hop count. `budget` is the total number of recursive frontier pages allowed for the run; it does not include ordinary search-result discovery.
+Modes provide defaults, but explicit `/rounds`, `/depth`, and `/budget` override them for the next run.
 
-### Run/data inspection
+- `quick`: one round; no deep recursive traversal.
+- `standard`: two rounds, light specialist/archive work, shallow frontier.
+- `deep`: multiple plan/search/re-plan rounds, academic/code sources, archives, citation snowballing, and best-first recursive traversal.
+
+## 4. Inspect durable research state
 
 ```text
 /runs
-/resume [RUN_ID]
-/pause
 /sources [RUN_ID]
 /claims [RUN_ID]
 /frontier [RUN_ID]
-/export [RUN_ID] [md|json|mermaid|evidence]
+/archives [RUN_ID]
+/citations [RUN_ID]
+/entities [RUN_ID]
+/timeline [RUN_ID]
+/graph [RUN_ID]
+/router
 ```
 
-### Provider/router
+CLI equivalents include:
+
+```bash
+traceweave runs
+traceweave show RUN_ID
+traceweave claims RUN_ID
+traceweave archives RUN_ID
+traceweave entities RUN_ID
+traceweave timeline RUN_ID
+traceweave router-log
+```
+
+## 5. Providers
+
+No `providers.toml` is required for the built-in provider mesh. Put up to three tokens/provider in `.env`, then:
 
 ```text
 /providers
+/providers sync
 /providers reload
-/router
-/doctor
 ```
 
-### Sessions
+or:
+
+```bash
+traceweave providers --sync --task planning
+```
+
+Catalog sync is credential-scoped. If token-1 can see model A and token-2 cannot, model A is only attached to token-1. Catalog refresh obeys a cache TTL; failed `/models` calls get a separate provider+token exponential retry window.
+
+Runtime request health is separate:
+
+- 401/402/429 → token/credential cooldown
+- model-specific permission/request failure → token+model cooldown
+- refusal/invalid structured output → token+model+task cooldown
+- timeout/5xx/network → deployment cooldown
+
+`Retry-After` / rate-limit reset headers win over computed backoff when present.
+
+## 6. Sessions
 
 ```text
 /session list
 /session new NAME
-/session switch SESSION_ID
+/session switch ID
 /session rename NAME
 ```
 
-### Local shell
+A session stores operator state such as angle, mode, language, active run, and local-shell setting. Runs and research evidence remain separately durable in SQLite.
+
+## 7. Local shell
+
+Disabled by default:
 
 ```text
 /shell status
 /shell enable
 !git status
-!python --version
 /shell disable
 ```
 
-Shell execution is local, disabled by default and **not a sandbox**.
+This is a local operator convenience, not an agent tool. Fetched web content and model responses cannot trigger it. Commands run with the OS permissions of the TraceWeave process, so keep it disabled unless needed.
 
-### UI
+## 8. Exports
 
 ```text
-/clear
-/help
-/quit
+/export md
+/export json
+/export mermaid
+/export evidence
 ```
 
-The input has command suggestions, command history with Up/Down, and is cleared after execution. Textual's `Ctrl+P` command palette remains available. The old bottom footer/helper bar was removed.
-
-## 6. CLI examples
-
-Quick research:
-
-```bash
-traceweave research "Example Company" --mode quick
-```
-
-Deep research:
-
-```bash
-traceweave research "Example Company" \
-  --mode deep \
-  --angle "ownership, technology and historical changes" \
-  --depth 3 \
-  --frontier-budget 50 \
-  --language all
-```
-
-Resume:
-
-```bash
-traceweave runs
-traceweave resume RUN_ID
-```
-
-Inspect evidence:
-
-```bash
-traceweave show RUN_ID
-traceweave claims RUN_ID
-```
-
-Router:
-
-```bash
-traceweave providers
-traceweave providers --task planning
-traceweave providers --reload
-traceweave router-log --limit 100
-```
-
-Exports:
+or:
 
 ```bash
 traceweave export RUN_ID --format md
@@ -215,205 +143,62 @@ traceweave export RUN_ID --format mermaid
 traceweave export RUN_ID --format evidence
 ```
 
-## 7. Search configuration
+JSON contains sources/discoveries, claims, frontier, archive captures, citations, entities, relationships, timeline events, research edges, and event log. Mermaid includes the search trail and a bounded entity/relationship overlay.
 
-Default:
+## 9. Stage 4 configuration
+
+Useful `.env` knobs:
 
 ```dotenv
-TRACEWEAVE_SEARCH_BACKEND=auto
-TRACEWEAVE_SEARXNG_URL=http://127.0.0.1:8080
+TRACEWEAVE_ARCHIVES_ENABLED=true
+TRACEWEAVE_WAYBACK_ENABLED=true
+TRACEWEAVE_COMMONCRAWL_ENABLED=true
+TRACEWEAVE_ACADEMIC_ENABLED=true
+TRACEWEAVE_GITHUB_ENABLED=true
+TRACEWEAVE_PDF_ENABLED=true
+TRACEWEAVE_ARCHIVE_SOURCES_PER_ROUND=4
+TRACEWEAVE_ARCHIVE_CAPTURES_PER_SOURCE=3
+TRACEWEAVE_SPECIALIST_QUERIES_PER_ROUND=3
+TRACEWEAVE_SPECIALIST_RESULTS_PER_QUERY=5
+TRACEWEAVE_PDF_MAX_BYTES=20000000
+TRACEWEAVE_GITHUB_TOKEN=
+TRACEWEAVE_OPENALEX_MAILTO=
 ```
 
-`auto` tries SearXNG first, then DDGS. For a long-lived VPS, a self-hosted SearXNG instance is the preferred primary search interface.
+For a small VPS, increase source budgets slowly. Browser rendering is the expensive part; ordinary HTTP, archive APIs, and academic APIs are much lighter.
 
-Search-result provenance is stored **before fetch**. TraceWeave preserves the query, rank, engine, category, publication metadata and raw normalized search result even if the page later fails to download.
+## 10. Troubleshooting
 
-## 8. Provider mesh
+### No model shown on landing
+Run `/providers sync` or `traceweave providers --sync`. A router with only dynamic models may display `deterministic / catalog discovery` until its first successful catalog sync.
 
-Copy:
+### One token is rate limited
+Do nothing manually unless all routes are exhausted. TraceWeave cools that credential and tries another credential/model/provider.
+
+### Research paused/crashed
+Use `/resume` or `traceweave resume RUN_ID`. Search/source/provenance state is committed incrementally.
+
+### SeekRouter warning
+The built-in preset follows the provider's documented base URL, which may be HTTP. If your account/provider gives you HTTPS, set `SEEKROUTER_BASE_URL` to that HTTPS endpoint.
+
+### ZenMux key but free model does not run
+A zero-priced model does not imply that every ZenMux subscription can call the API. The router will catalog/probe only what the supplied API credential can actually access.
+
+### PDFs fail
+Install Stage 4 extras:
 
 ```bash
-cp providers.example.toml providers.toml
+pip install -e '.[stage4]'
 ```
 
-Tokens belong in environment variables, not TOML:
-
-```dotenv
-ROUTER_A_TOKEN_1=...
-ROUTER_A_TOKEN_2=...
-GROQ_API_KEY_A=...
-GEMINI_API_KEY_A=...
-```
-
-A candidate is:
-
-```text
-provider + credential/token + model
-```
-
-One provider can have many tokens and models. For example 3 tokens × 2 models may create six independently schedulable routes.
-
-Failure isolation:
-
-```text
-401 / 403 / 429
-  → token/credential cooldown
-
-network / timeout / 5xx / model mismatch
-  → token + model cooldown
-
-refusal / invalid structured JSON
-  → token + model + task cooldown
-```
-
-A failing token does not automatically disable other tokens belonging to that provider.
-
-TTL behavior:
-
-1. prefer provider `Retry-After` / recognized reset hints;
-2. otherwise use failure-class-specific exponential backoff;
-3. cap TTL so a transient error cannot poison a route forever;
-4. decay old health observations after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`.
-
-Read `docs/PROVIDERS.md` for full configuration.
-
-## 9. Evidence pipeline
-
-Every fetched source can be scored independently on:
-
-```text
-relevance
-importance
-novelty
-authority
-```
-
-Exact duplicates use SHA-256. Near duplicates use SimHash and are marked with `duplicate_of`; novelty is reduced rather than treating the copy as independent evidence.
-
-For model-extracted claims, TraceWeave requires an exact evidence quote. A claim is persisted as grounded only if that quote is found literally in the stored snapshot text, with verified offsets.
-
-Read `docs/EVIDENCE.md`.
-
-## 10. Deep traversal
-
-TraceWeave extracts ordinary links, citation/document-like links, RSS/Atom links and bounded sitemap candidates. Links enter a persistent best-first frontier.
-
-Priority considers topic/angle overlap, anchor/path signals, document/citation hints, same-domain context, depth and obvious low-value URL penalties. Per-domain limits and a total frontier budget prevent crawl explosions.
-
-`robots.txt` is respected by default:
-
-```dotenv
-TRACEWEAVE_RESPECT_ROBOTS=true
-```
-
-Read `docs/FRONTIER.md`.
-
-## 11. Browser fallback
-
-Default is normal HTTP collection. To opt into Crawl4AI for JS-heavy pages:
+### JS-only page
+Install full extras and enable browser fallback intentionally:
 
 ```bash
-pip install -e '.[browser]'
+pip install -e '.[full]'
 crawl4ai-setup
 ```
 
 ```dotenv
 TRACEWEAVE_BROWSER_FALLBACK=true
-TRACEWEAVE_BROWSER_MIN_TEXT_CHARS=500
 ```
-
-On an 8 GB VPS keep browser concurrency conservative. Browser fallback should be exceptional, not the default path for every page.
-
-## 12. Persistent data
-
-Default:
-
-```text
-.traceweave/
-├── traceweave.db
-├── sources/
-│   └── SOURCE_ID/
-│       ├── HASH.raw.gz
-│       └── HASH.txt
-└── exports/
-```
-
-Move it with:
-
-```dotenv
-TRACEWEAVE_DATA_DIR=/var/lib/traceweave
-```
-
-v0.3 migrations are additive and run when storage initializes. Back up `.traceweave/` before major upgrades anyway.
-
-## 13. Sessions vs runs
-
-A **run** is durable research state. A **session** is TUI workspace state.
-
-A session remembers the active run, angle, mode, language, onboarding and local-shell toggle. Closing the TUI does not delete either one.
-
-## 14. Configuration reference
-
-See `.env.example`, `providers.example.toml`, and `docs/CONFIGURATION.md`.
-
-Important operational variables include:
-
-```text
-TRACEWEAVE_FETCH_CONCURRENCY
-TRACEWEAVE_ROUTER_MAX_ATTEMPTS
-TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS
-TRACEWEAVE_CLAIMS_MAX_SOURCES_PER_ROUND
-TRACEWEAVE_FRONTIER_MIN_SCORE
-TRACEWEAVE_FRONTIER_PER_DOMAIN_LIMIT
-TRACEWEAVE_BROWSER_FALLBACK
-TRACEWEAVE_SHELL_ENABLED
-```
-
-## 15. Tests
-
-Development setup:
-
-```bash
-pip install -e '.[dev]'
-python -m compileall -q src tests scripts
-ruff check src tests
-pytest
-python scripts/smoke_test.py
-python scripts/smoke_stage23.py
-python -m build
-```
-
-The Stage 2/3 smoke test runs an offline fake search + fake model workflow through planning, search, snapshot, triage, grounded claim extraction, frontier traversal, re-planning and synthesis.
-
-## 16. Troubleshooting
-
-### No usable model routes
-
-```bash
-traceweave doctor
-traceweave providers
-```
-
-Check that `providers.toml` exists and every `token_env` environment variable is actually set. TraceWeave can still collect using deterministic fallback behavior without a model, but model triage/claims/synthesis will be limited.
-
-### Route stuck in cooldown
-
-```bash
-traceweave providers --task planning
-traceweave router-log
-```
-
-Look at which scope failed. Do not rotate or delete all provider configuration because one token got a 429.
-
-### Search returns nothing
-
-Check SearXNG reachability. With `auto`, TraceWeave can fall back to DDGS, but public upstream engines may rate limit it.
-
-### Interrupted research
-
-```bash
-traceweave runs
-traceweave resume RUN_ID
-```
-
-Pending queries and abandoned frontier leases are durable.

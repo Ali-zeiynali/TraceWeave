@@ -1,223 +1,166 @@
-# TraceWeave v0.3 Architecture
+# TraceWeave v0.5 Architecture
 
-TraceWeave is deliberately split into a **reasoning plane** and a **deterministic data plane**. Models plan, re-plan, triage, extract grounded claims and synthesize. Python owns search, crawling, persistence, provenance, routing, retries, frontier scheduling and resume.
+## Design goal
 
-## 1. Core invariant
-
-```text
-ResearchSpec
-    ↓
-PLAN (bounded)
-    ↓
-SEARCH + STORE DISCOVERY
-    ↓
-FETCH + SNAPSHOT
-    ↓
-TRIAGE + GROUNDED CLAIMS
-    ↓
-BEST-FIRST FRONTIER
-    ↓
-ASSESS GAPS / LEADS
-    ↓
-RE-PLAN
-    ↓
-... bounded rounds ...
-    ↓
-SYNTHESIS FROM STORED EVIDENCE
-```
-
-A run must remain understandable and resumable without relying on model conversation history.
-
-## 2. Runtime boundaries
+TraceWeave is a long-horizon research runtime, not a chat transcript with tools. Durable state lives outside model context. The model sees small task-specific capsules assembled from persisted evidence.
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│ TUI / CLI                                                   │
-└───────────────────────────┬─────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ ResearchEngine                                               │
-│ plan → search → analyze → frontier → re-plan → synthesize   │
-└───────┬───────────────────┬───────────────────┬─────────────┘
-        │                   │                   │
-        ↓                   ↓                   ↓
- SearchBackend          ModelRouter        FrontierManager
-        │                   │                   │
-        ↓                   ↓                   ↓
- SearXNG/DDGS       provider/token/model    SafeFetcher
-                            │               Crawl4AI optional
-                            ↓
-                     task-specific prompts
-                     progressive skills
-        └───────────────────┬───────────────────┘
-                            ↓
-                        Storage
-              SQLite + files + durable events
-```
-
-`runtime.build_runtime()` is the composition root. Concrete adapters should be wired there rather than imported throughout unrelated modules.
-
-## 3. Durable model
-
-### Research state
-
-- `runs`: immutable request parameters plus lifecycle/current round.
-- `plans`: the exact plan saved for each round, including gaps and source classes.
-- `queries`: resumable query work units with status.
-- `events`: append-oriented research/runtime trail.
-
-### Provenance
-
-- `sources`: canonical resource identity.
-- `run_sources`: every discovery edge from a query/frontier to a source. Multiple engines/categories/queries are preserved independently.
-- `snapshots`: fetched content versions with SHA-256, SimHash, raw gzip body and extracted text.
-
-A failed fetch never erases the original discovery.
-
-### Evidence
-
-- `source_analysis`: relevance, importance, novelty, authority, topics, leads, source family and duplicate relation.
-- `claims`: atomic claim records.
-- `evidence`: exact quote, source id, snapshot hash and verified character offsets.
-
-A model-proposed quote must literally occur in the stored snapshot before TraceWeave persists it as grounded evidence.
-
-### Deep traversal
-
-- `frontier`: durable best-first URL queue with parent source, relation, anchor, depth, score, domain and status.
-- `domain_state`: per-run/domain crawler metadata such as sitemap/robots work.
-
-Frontier state is `pending → leased → completed|failed`. Abandoned leases are returned to pending on resume.
-
-### Sessions
-
-- `sessions`: TUI/workspace state such as active run, angle, mode, language, onboarding and local-shell toggle.
-
-A session is not a research run. Several UI sessions may point at different durable runs.
-
-### Router health
-
-- `router_credentials`: token/credential health. No raw token is persisted.
-- `router_deployments`: `provider + credential + model` health.
-- `router_task_health`: deployment + task suitability health.
-- `router_attempts`: auditable routing outcomes without secrets.
-
-## 4. Provider-router failure scopes
-
-The fundamental routing candidate is:
-
-```text
-provider + credential/token + model
-```
-
-TraceWeave intentionally has **no hard provider-wide poisoning**.
-
-### Credential scope
-
-`401`, `403`, `429` and quota/auth failures affect the configured credential id. Every model using that token may cool down, but other tokens from the same provider remain eligible.
-
-### Deployment scope
-
-Timeout, transient network/upstream failure, model/request mismatch or malformed endpoint behavior affects only `token + model`.
-
-### Task scope
-
-Refusal-style output or structured-JSON failure affects only `token + model + task` so a model can be unsuitable for `replanning` yet remain useful for `triage`.
-
-Cooldown TTL prefers upstream reset hints such as `Retry-After`; otherwise bounded exponential backoff is used by failure class. Historical latency/failure observations decay after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`, while an active absolute cooldown is still honored.
-
-## 5. Why tool calling is not required
-
-Models never own the crawler or shell. The minimal model contract is:
-
-```text
-json(system, user, task) -> dict
-text(system, user, task) -> str
-```
-
-This keeps ordinary OpenAI-compatible endpoints useful even when their function/tool calling is absent or unreliable. The orchestrator executes search, fetch, persistence and traversal.
-
-## 6. Planning and context discipline
-
-The initial planner receives the `ResearchSpec`, not the whole future research tree. Every later round receives a compact state consisting of completed queries, high-value sources, grounded claims, gaps and leads.
-
-Raw pages remain outside model context. `ContextBuilder` behavior is currently distributed between planner/analyzer/engine payload builders; later long-memory stages can extract that into a dedicated retrieval component without changing the evidence schema.
-
-## 7. Search and collection
-
-Search adapters normalize to:
-
-```text
-url
-title
-snippet
-engine
-category
-published_at
-raw metadata
-```
-
-Stage 3 collection ladder:
-
-```text
-SearXNG / DDGS discovery
+ResearchSpec / Session
         ↓
-SafeFetcher (default)
-        ↓ if JS-heavy and explicitly enabled
-Crawl4AI BrowserFetcher
+Planner ────────────────┐
+        ↓               │
+Generic Search          │
+        ├─ SearXNG      │
+        └─ DDGS         │
+        ↓               │
+Specialist Discovery    │
+  ├─ OpenAlex           │
+  ├─ Crossref           │
+  ├─ arXiv              │
+  └─ GitHub             │
+        ↓               │
+Fetch / Parse           │
+  ├─ HTML/text          │
+  ├─ PDF                │
+  └─ optional Crawl4AI  │
+        ↓               │
+Evidence Analyzer       │
+        ↓               │
+Claims + Citation Leads │
+        ↓               │
+Archives                │
+  ├─ Wayback            │
+  └─ Common Crawl       │
+        ↓               │
+Best-first Frontier     │
+        ↓               │
+Graph Curator           │
+        ↓               │
+Gap-driven Re-planner ──┘
+        ↓
+Synthesizer / Exporter
 ```
 
-`SafeFetcher` validates public HTTP(S) targets, resolves and rejects private/reserved destinations, re-validates redirects, limits bytes/time, extracts links/text and does not inherit ambient proxy variables.
+## 1. Durable state boundaries
 
-## 8. Best-first traversal
+SQLite is the v0.5 durable state store. It holds:
 
-`max_depth` is only a ceiling. Each link is scored using topic/angle overlap, anchor/path signals, citation/document hints, domain context and low-value path penalties. Global run budget plus per-domain limits prevent a single site from consuming the investigation.
+- runs and per-round plans
+- queries and their completion/error state
+- canonical sources and every discovery path
+- compressed snapshots and content hashes
+- source analysis and grounded claims/evidence
+- recursive frontier leases
+- persistent TUI sessions
+- provider credential/deployment/task health
+- provider routing attempts
+- archive captures and per-source Stage-4 completion state
+- citations
+- entities, relationships and timeline events
+- research edges and event log
 
-This avoids breadth explosions while still allowing a high-value obscure link several hops away to enter a later re-plan.
+Large raw/text payloads are stored as compressed files under `.traceweave/` and referenced from SQLite.
 
-## 9. Prompt and skill layout
+## 2. Plan → collect → re-plan
 
-`src/traceweave/prompts/` contains task-specific contracts:
+A plan is intentionally one round. Re-planning receives bounded source capsules, grounded-claim capsules, and compact research-state counts. It does not receive the entire browsing transcript.
 
-- `initial_plan.txt`
-- `replan.txt`
-- `triage.txt`
-- `claims.txt`
-- `synthesis.txt`
+This keeps low-context models usable and makes resume deterministic.
 
-`src/traceweave/skills/` contains compact procedural knowledge. `SkillRegistry` progressively loads only skills relevant to the current task, so the base prompt does not carry every research procedure on every call.
+## 3. Provider mesh
 
-Web/source text is always treated as **untrusted data**, never executable instructions.
+The route identity is:
 
-## 10. TUI boundary
+`provider + credential + model + task`
 
-The Textual application only invokes normal runtime APIs and renders `ProgressEvent`s. No research algorithm should live exclusively in a widget. This keeps the same engine usable via TUI, CLI, future API service and background workers.
+Health has three independent scopes:
 
-The v0.3 UI starts with onboarding + command input only. The workspace appears after `/research`, `/resume`, or a command that has meaningful data to display. The old footer was removed entirely.
+1. credential (`provider:token`) — auth, quota, rate limit;
+2. deployment (`provider:token:model`) — timeout, upstream/model-specific problems;
+3. task (`provider:token:model:task`) — refusal or structured-output failure.
 
-## 11. Resource strategy for an 8 GB VPS
+### Credential-scoped model catalog
 
-Default v0.3 stays deliberately small:
+Dynamic providers are queried per token. Cache shape:
 
-```text
-TraceWeave Python process
-SQLite
-HTTP client
-Textual TUI
-SearXNG optional external service
+```json
+{
+  "providers": {
+    "router-x": {
+      "token-1": [{"id": "model-a"}],
+      "token-2": [{"id": "model-b"}]
+    }
+  }
+}
 ```
 
-Crawl4AI and LiteLLM are optional extras. Neo4j, Qdrant, Elasticsearch, Kafka, Temporal and local large models are not default dependencies.
+A model discovered for token-1 is never automatically bound to token-2.
 
-## 12. Stable extension points
+Catalog TTL and catalog-failure retry are separate from request health. A shared async lock prevents concurrent model calls from stampeding `/models` on refresh.
 
-Later stages should extend, not replace, these boundaries:
+## 4. Stage 4 source adapters
 
-- `SearchBackend` for OpenAlex/Crossref/arXiv/GitHub/archives.
-- `ModelRouter` drivers and capability-aware scheduling.
-- `FrontierManager` scoring/reranking.
-- evidence/source-family analysis.
-- entity/relationship graph tables layered over existing source/claim provenance.
-- workers/queues outside the engine when one process is no longer sufficient.
+Specialist adapters return normalized `SpecialistResult` objects and then enter the same source/provenance/evidence system as generic web results.
 
-The invariant to preserve is: **durable evidence and state live outside model context; model outputs are proposals until deterministic validation/persistence accepts them.**
+### Academic
+OpenAlex, Crossref, and arXiv are searched independently. Failures in one source do not abort the others.
+
+### GitHub
+Only public repository and issue search is used in v0.5. Authentication is optional and only increases normal public API capacity.
+
+### Archives
+Wayback CDX finds time-separated captures. Common Crawl locates indexed WARC records and range-fetches selected captures. A capture has its own timestamp, engine, digest and source relationship.
+
+A successful archive check is marked in `source_stage_state`, so the same run does not repeat completed archive API work every round. Temporary errors remain retryable.
+
+### PDF
+PDF byte limits are separate from ordinary-page limits. `pypdf` extracts bounded page text and metadata. PDF content enters the same snapshot/evidence pipeline.
+
+### Citation snowballing
+DOI, arXiv and public URL references become explicit citation records and high-value frontier leads. A citation is a lead, not automatically evidence.
+
+## 5. Stage 5 foundation
+
+Graph state is intentionally grounded in claims rather than raw model inference.
+
+- Entity normalization may use a model.
+- A relationship is accepted only if it references a claim ID already stored in the run.
+- Invalid/unknown claim IDs are rejected.
+- Timeline events come from grounded claim dates.
+- Every relationship/timeline item retains claim/source provenance.
+
+SQLite is sufficient at this stage. A dedicated graph database is deferred until query volume/graph size justifies the operational cost.
+
+## 6. Frontier
+
+Recursive browsing is best-first and budgeted, not naive depth-first explosion. Frontier entries carry URL, parent source, relation, depth, score and lease status. The run can recover stale leases after restart.
+
+## 7. TUI architecture
+
+The TUI has two visual states:
+
+- **Landing:** centered input, folder, planning route/model, random tip.
+- **Workspace:** source table + compact plan/gaps + bounded trace log + command input.
+
+No Footer widget is used. No CSS `margin: auto` is used; centering uses Textual's `CenterMiddle` container.
+
+TUI sessions persist separately from research runs, so switching sessions changes operator context without destroying evidence.
+
+## 8. Security boundaries
+
+- Live fetch validation rejects private/link-local/internal target addresses.
+- `robots.txt` is respected for normal live traversal.
+- Web content is untrusted data and is never interpreted as system/tool instructions.
+- The local shell is an operator convenience, disabled by default, and is not exposed to the LLM or web content.
+- Specialist adapters use public APIs/public repositories/public archives; no credential harvesting or authenticated/private crawling is implemented.
+
+## 9. Extension points
+
+Future stages can add adapters without changing the core evidence model:
+
+- additional public registries and structured datasets
+- stronger entity resolution/source-family analysis
+- archive-diff engine
+- GraphRAG/corpus community summaries
+- distributed workers/Redis/PostgreSQL when one-node SQLite becomes a bottleneck
+- richer TUI graph/timeline views

@@ -31,7 +31,8 @@ class Planner:
             return self._heuristic(spec, round_no=1, completed=[])
 
     async def replan(self, spec: ResearchSpec, *, round_no: int, completed_queries: list[str],
-                     sources: list[SourceView], claims: list[dict] | None = None, run_id: str | None = None) -> Plan:
+                     sources: list[SourceView], claims: list[dict] | None = None,
+                     research_state: dict | None = None, run_id: str | None = None) -> Plan:
         if self.provider is None:
             return self._heuristic(spec, round_no=round_no, completed=completed_queries)
         capsules = []
@@ -52,6 +53,7 @@ class Planner:
             "topic": spec.topic, "angle": spec.angle, "mode": spec.mode, "round": round_no,
             "completed_queries": completed_queries[-50:], "source_capsules": capsules,
             "grounded_claim_capsules": claim_capsules,
+            "research_state": research_state or {},
         }
         try:
             data = await self.provider.json(
@@ -99,5 +101,5 @@ class Planner:
                 queries.append(query)
         return Plan(
             objective=objective, focus=focus, queries=queries[:5], rationale="Deterministic fallback plan",
-            gaps=gaps, source_classes=["official", "independent reporting", "documents", "specialist sources"],
+            gaps=gaps, source_classes=["official", "independent reporting", "documents", "academic", "archives", "code"],
         )

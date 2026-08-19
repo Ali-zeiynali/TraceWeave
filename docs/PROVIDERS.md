@@ -1,176 +1,100 @@
-# Provider mesh and routing
+# Provider / Model Router — v0.5
 
-## Design goal
+## Built-in provider presets
 
-Free-tier, promotional and small router endpoints are often inconsistent: one token may hit quota, one model may disappear, JSON behavior may degrade, or a model may refuse a specific task. TraceWeave therefore treats provider routing as a durable scheduling problem rather than a single fallback list.
+The built-in presets are activated only when their environment key exists. No token is hard-coded or written to SQLite/catalog files.
 
-## Routing unit
+### Environment convention
 
-A deployment key is:
+For every built-in provider:
 
-```text
-provider_id : credential_id : model_id
+```dotenv
+PROVIDER_API_KEY=token-one
+PROVIDER_API_KEY_2=token-two
+PROVIDER_API_KEY_3=token-three
 ```
 
-Raw token values live only in environment variables. `providers.toml` references those environment-variable names.
+`PROVIDER_API_KEY_1` is accepted in place of the unnumbered first key.
 
-## Failure scope
+Supported preset prefixes:
 
-TraceWeave intentionally avoids hard provider-wide poisoning.
+- `AGENTROUTER`
+- `SEEKROUTER`
+- `ZENMUX`
+- `OPENROUTER`
+- `MISTRAL`
+- `GEMINI`
+- `GROQ`
 
-### Credential/token scope
+Each also accepts `PROVIDER_BASE_URL` for endpoint override.
 
-Applied primarily to:
+## Current preset strategy
 
-- HTTP 401 / 403 authentication failures
-- HTTP 429 quota / rate-limit failures
+### AgentRouter
+Bootstrap strong routes include currently documented GPT/Kimi/GLM examples, then `/models` is discovered per credential. This provider is treated as opportunistic/credit-backed, not assumed free.
 
-A credential cooldown affects all models using that token because a rate/quota/auth problem is commonly token/account scoped. Other credentials belonging to the same provider remain eligible.
+Default base: `https://co.agentrouter.org/v1` (overrideable).
 
-### Token + model deployment scope
+### SeekRouter
+Models are discovered from `/models` per credential because available models can vary. The currently documented base may use HTTP; TraceWeave emits a warning and supports `SEEKROUTER_BASE_URL` override. Prefer HTTPS whenever the provider/account offers it.
 
-Applied to:
+### ZenMux
+Static zero-priced candidates include current GLM free variants; dynamic catalog rows are filtered to zero-priced/Free identifiers. A zero-priced model is not the same thing as API entitlement: the supplied ZenMux account must actually have API access.
 
-- timeout / transient network failure
-- 5xx upstream failure
-- model/request incompatibility
-- malformed endpoint response
+### OpenRouter
+`openrouter/free` is always available as a preset candidate when a key is configured. The dynamic Models API is queried and only zero-priced/`:free` chat models are attached. Free-model availability is intentionally dynamic.
 
-This prevents one broken model deployment from disabling unrelated models or credentials.
+### Mistral
+`mistral-small-latest` bootstraps the route; `/models` is queried per token because Free-mode organization access and model availability can vary. TraceWeave does not pretend every public Mistral model is included in every free account.
 
-### Token + model + task scope
+### Gemini
+Current curated Flash/Flash-Lite routes are used through Google's OpenAI-compatible endpoint. Strong planning/synthesis prefers newer Flash; triage/entity extraction prefers faster Flash-Lite routes.
 
-Applied to:
+### Groq
+Current curated routes separate strong GPT-OSS 120B from faster GPT-OSS 20B/Qwen workers. The router uses the normal Groq OpenAI-compatible endpoint.
 
-- refusal-style output
-- invalid JSON for structured tasks
+## Routing score
 
-A model that is poor for political `replanning`, for example, may still remain available for ordinary `triage`.
+The candidate pool is first filtered by requested task and cooldown state. Remaining candidates are ranked by configured task priority, historical failure ratio, latency EMA, and route weight.
 
-## Dynamic cooldown TTL
+Priority is intentional: a fast classifier should not silently replace the strong planning model merely because it has 100 ms lower latency.
 
-If the provider returns `Retry-After` or recognizable rate-reset headers, TraceWeave prefers that duration. Otherwise it uses bounded exponential backoff by failure class. Authentication failures have a longer cooldown; rate limits are shorter; timeouts/5xx are shorter still.
+## Failure scopes
 
-Historical success/failure/latency observations decay after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`. An active absolute cooldown remains respected even when old scoring observations have decayed.
+| Failure | Scope | Example |
+|---|---|---|
+| 401 | credential | invalid/expired token |
+| 402 | credential | credit/quota exhausted |
+| 429 | credential | token/account rate limit |
+| 400/403/404/422 model/request | deployment | token may still work with another model |
+| timeout/network/5xx | deployment | route-specific availability problem |
+| refusal | task | model may still be useful for other research tasks |
+| invalid JSON | task | do not discard model for free-text synthesis |
 
-## Candidate score
+For credential failures, only that token is cooled. Other tokens on the same provider remain candidates.
 
-Healthy candidates are filtered by task first, then ranked by:
+## Dynamic TTL
 
-- configured `priority`
-- configured `weight`
-- recent deployment failure ratio
-- recent task failure ratio
-- latency EMA
+If `Retry-After` or recognized rate-limit reset headers exist, their delay is preferred. Otherwise TraceWeave uses capped exponential backoff based on failure type.
 
-Explicit priority remains the strongest signal; runtime health adjusts it rather than completely replacing operator intent.
+Observed health becomes stale after `TRACEWEAVE_ROUTER_HEALTH_TTL_SECONDS`, so old latency/failure history stops dominating current routing.
 
-## Configuration
+## Model catalog TTL
 
-```toml
-[[providers]]
-id = "router-a"
-driver = "openai_compat"
-base_url = "https://router.example/v1"
-enabled = true
+Dynamic `/models` results are stored per provider+credential under `.traceweave/catalog/models.json`. Catalog TTL is controlled by `TRACEWEAVE_PROVIDER_CATALOG_TTL_SECONDS`.
 
-[[providers.credentials]]
-id = "token-a"
-token_env = "ROUTER_TOKEN_A"
+A failed catalog refresh receives its own provider+credential retry schedule (30 s exponential, capped at 30 min) and does not kill curated fallback routes. An async refresh lock prevents concurrent model calls from stampeding a flaky endpoint.
 
-[[providers.credentials]]
-id = "token-b"
-token_env = "ROUTER_TOKEN_B"
+## Explicit override
 
-[[providers.models]]
-id = "cheap"
-name = "cheap-model-id"
-tasks = ["triage", "claim_extraction"]
-priority = 20
-weight = 1.5
+Copy `providers.example.toml` to `providers.toml` only when you want to override a built-in provider or add a custom route. Explicit provider IDs replace the same built-in ID.
 
-[[providers.models]]
-id = "reasoning"
-name = "reasoning-model-id"
-tasks = ["planning", "replanning", "synthesis"]
-priority = 10
-```
+## Official references used for current presets
 
-This produces four routes: two tokens × two models.
+- Groq models: https://console.groq.com/docs/models
+- Gemini models: https://ai.google.dev/gemini-api/docs/models
+- Mistral usage/limits: https://docs.mistral.ai/admin/billing-usage/usage-limits
+- OpenRouter free router: https://openrouter.ai/docs/guides/routing/routers/free-router
+- OpenRouter Models API: https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties
 
-Restrict a model to selected credentials:
-
-```toml
-credentials = ["token-b"]
-```
-
-## Drivers
-
-### `openai_compat`
-
-Built into TraceWeave. Use it for endpoints implementing `POST /chat/completions`. This is the preferred path for small routers because it adds no heavy provider SDK.
-
-### `litellm`
-
-Optional:
-
-```bash
-pip install -e '.[providers]'
-```
-
-It allows TraceWeave to reuse LiteLLM's broad provider normalization while keeping TraceWeave's own credential/model/task health logic above it. Current LiteLLM documentation lists many providers and routing primitives; verify current provider prefixes/model ids in LiteLLM's official documentation before deployment.
-
-Typical model-name shapes include:
-
-```text
-groq/<MODEL_ID>
-gemini/<MODEL_ID>
-anthropic/<MODEL_ID>
-mistral/<MODEL_ID>
-cerebras/<MODEL_ID>
-openrouter/<MODEL_ID>
-deepseek/<MODEL_ID>
-```
-
-Do not copy stale model ids from random lists; provider catalogs change quickly.
-
-## Reload without restart
-
-TUI:
-
-```text
-/providers reload
-```
-
-CLI:
-
-```bash
-traceweave providers --reload
-```
-
-Persisted health remains in SQLite because it is keyed by configured ids, not raw secrets.
-
-## Task pools
-
-Current task labels:
-
-```text
-planning
-replanning
-triage
-claim_extraction
-synthesis
-general
-```
-
-A model can list `tasks=["*"]` to accept every task. Cheap workers should normally be restricted to triage/extraction while stronger long-context/reasoning models handle planning and synthesis.
-
-## Debugging
-
-```bash
-traceweave providers
-traceweave providers --task planning
-traceweave router-log
-```
-
-The router log records route ids, outcome, failure class, HTTP status and latency. It never records the raw API token.
+Provider catalogs change; the dynamic-catalog design exists specifically so TraceWeave is not tied forever to this list.
