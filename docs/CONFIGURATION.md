@@ -1,6 +1,8 @@
 # Configuration Reference — v0.5
 
-TraceWeave loads `.env` through `pydantic-settings`. `TRACEWEAVE_` prefixes apply to core settings. Built-in provider key names intentionally do not use that prefix.
+TraceWeave loads core settings through `pydantic-settings` and loads simple `.env` assignments into the process without
+overwriting parent environment variables. This is required for unprefixed provider keys such as `GROQ_API_KEY`; secrets are
+kept in memory and are not written to SQLite/catalog/health logs.
 
 See `.env.example` for a complete copy/paste template.
 
@@ -16,7 +18,10 @@ See `.env.example` for a complete copy/paste template.
 
 ## Frontier
 
-`TRACEWEAVE_FRONTIER_ENABLED`, `TRACEWEAVE_FRONTIER_MIN_SCORE`, `TRACEWEAVE_FRONTIER_PER_DOMAIN_LIMIT`, `TRACEWEAVE_SITEMAP_ENABLED`, `TRACEWEAVE_BROWSER_FALLBACK`, `TRACEWEAVE_BROWSER_MIN_TEXT_CHARS`.
+`TRACEWEAVE_FRONTIER_ENABLED`, `TRACEWEAVE_FRONTIER_MIN_SCORE`, `TRACEWEAVE_FRONTIER_PER_DOMAIN_LIMIT`,
+`TRACEWEAVE_SITEMAP_ENABLED`, `TRACEWEAVE_BROWSER_FALLBACK`, `TRACEWEAVE_BROWSER_BACKEND` (`auto`, `cloudflare`,
+`local`), `TRACEWEAVE_BROWSER_MIN_TEXT_CHARS`, `TRACEWEAVE_FETCH_PER_HOST_DELAY_SECONDS`, and
+`TRACEWEAVE_FETCH_RETRIES`.
 
 ## Evidence
 
@@ -30,6 +35,15 @@ See `.env.example` for a complete copy/paste template.
 
 `TRACEWEAVE_ENTITY_GRAPH_ENABLED` controls grounded entity/relationship/timeline curation.
 
+## Durable runs, registries and media
+
+`ResearchSpec` persists a wall-clock deadline, total model-attempt budget, separate remote-vision budget, retention mode and
+Quick/Standard/Deep/Overnight mode. Registry/social/media settings include
+`TRACEWEAVE_REGISTRY_SOURCES_ENABLED`, `TRACEWEAVE_PUBLIC_SOCIAL_ENABLED`, `TRACEWEAVE_BLUESKY_ENABLED`,
+`TRACEWEAVE_TELEGRAM_PUBLIC_ENABLED`, `TRACEWEAVE_MEDIA_ENABLED`, `TRACEWEAVE_MEDIA_MAX_BYTES`, and
+`TRACEWEAVE_REMOTE_VISION_ENABLED`. Official Instagram hashtag discovery additionally uses
+`TRACEWEAVE_INSTAGRAM_OFFICIAL_ENABLED`, `INSTAGRAM_ACCESS_TOKEN`, and `INSTAGRAM_USER_ID`.
+
 ## Router
 
 | Variable | Default |
@@ -41,12 +55,17 @@ See `.env.example` for a complete copy/paste template.
 | `TRACEWEAVE_PROVIDER_CATALOG_TTL_SECONDS` | 21600 |
 | `TRACEWEAVE_PROVIDER_CATALOG_AUTO_SYNC` | true |
 | `TRACEWEAVE_PROVIDER_CONFIG` | `providers.toml` |
+| `TRACEWEAVE_ZERO_COST_ONLY` | true |
 
 ## Provider keys
 
 Use any subset of:
 
-`AGENTROUTER_API_KEY[_2|_3]`, `SEEKROUTER_API_KEY[_2|_3]`, `ZENMUX_API_KEY[_2|_3]`, `OPENROUTER_API_KEY[_2|_3]`, `MISTRAL_API_KEY[_2|_3]`, `GEMINI_API_KEY[_2|_3]`, `GROQ_API_KEY[_2|_3]`.
+Every preset accepts the unnumbered key (or `_1`) plus `_2`, `_3`, `_4`, and `_5`. Prefixes are:
+`AGENTROUTER`, `SEEKROUTER`, `ZENMUX`, `OPENROUTER`, `MISTRAL`, `GEMINI`, `GROQ`, `CEREBRAS`, `SAMBANOVA`,
+`NARAROUTER`, and `AIGATE`. NVIDIA accepts `NVIDIA_API_KEY` or separate `NVIDIA_TEXT_API_KEY` /
+`NVIDIA_VISION_API_KEY` sets. Cloudflare accepts three matching `CLOUDFLARE_API_KEY[_2|_3]` and
+`CLOUDFLARE_ACCOUNT_ID[_2|_3]` pairs.
 
 Every provider also supports `<PREFIX>_BASE_URL` override.
 

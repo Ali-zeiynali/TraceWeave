@@ -49,6 +49,35 @@ def lexical_overlap(a: str, b: str) -> float:
     return len(left & right) / max(1, len(left))
 
 
+def metadata_published_at(metadata: dict[str, object]) -> str | None:
+    """Extract an explicitly supplied publication date from bounded page metadata."""
+    social = metadata.get("social")
+    if isinstance(social, dict):
+        for key in ("article:published_time", "date"):
+            value = social.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:100]
+
+    def walk(value: object) -> str | None:
+        if isinstance(value, dict):
+            for key in ("datePublished", "dateCreated", "uploadDate"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()[:100]
+            for nested in value.values():
+                found = walk(nested)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = walk(nested)
+                if found:
+                    return found
+        return None
+
+    return walk(metadata.get("json_ld"))
+
+
 def simhash64(text: str) -> str:
     tokens = list(words(text))
     if not tokens:
@@ -97,7 +126,7 @@ def extract_first_json_object(text: str) -> dict:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                value = json.loads(text[start:index + 1])
+                value = json.loads(text[start : index + 1])
                 if not isinstance(value, dict):
                     raise ValueError("JSON response is not an object")
                 return value

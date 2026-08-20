@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import gzip
-import io
 import json
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -28,26 +26,40 @@ class WaybackSource:
 
     async def captures(self, url: str, limit: int = 3) -> list[ArchiveCapture]:
         params = {
-            "url": url, "output": "json", "fl": "timestamp,original,mimetype,statuscode,digest",
-            "collapse": "digest", "limit": str(max(2, limit * 4)), "filter": "statuscode:200",
+            "url": url,
+            "output": "json",
+            "fl": "timestamp,original,mimetype,statuscode,digest",
+            "collapse": "digest",
+            "limit": str(max(2, limit * 4)),
+            "filter": "statuscode:200",
         }
-        async with httpx.AsyncClient(timeout=self.timeout, trust_env=False, headers={"User-Agent": "TraceWeave/0.5"}) as client:
+        async with httpx.AsyncClient(
+            timeout=self.timeout, trust_env=False, headers={"User-Agent": "TraceWeave/0.5"}
+        ) as client:
             r = await client.get("https://web.archive.org/cdx/search/cdx", params=params)
-            r.raise_for_status(); body = r.json()
+            r.raise_for_status()
+            body = r.json()
         if not isinstance(body, list) or len(body) < 2:
             return []
         header = body[0]
-        rows = [dict(zip(header, row)) for row in body[1:] if isinstance(row, list)]
+        rows = [dict(zip(header, row, strict=False)) for row in body[1:] if isinstance(row, list)]
         selected = _spread(rows, limit)
         out = []
         for row in selected:
             ts = str(row.get("timestamp") or "")
             original = str(row.get("original") or url)
-            out.append(ArchiveCapture(
-                engine="wayback", original_url=original,
-                capture_url=f"https://web.archive.org/web/{ts}id_/{original}", captured_at=ts,
-                mime=str(row.get("mimetype") or ""), status=_int(row.get("statuscode")), digest=str(row.get("digest") or ""), raw=row,
-            ))
+            out.append(
+                ArchiveCapture(
+                    engine="wayback",
+                    original_url=original,
+                    capture_url=f"https://web.archive.org/web/{ts}id_/{original}",
+                    captured_at=ts,
+                    mime=str(row.get("mimetype") or ""),
+                    status=_int(row.get("statuscode")),
+                    digest=str(row.get("digest") or ""),
+                    raw=row,
+                )
+            )
         return out
 
 
@@ -61,7 +73,8 @@ class CommonCrawlSource:
             return self._index
         async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
             r = await client.get("https://index.commoncrawl.org/collinfo.json")
-            r.raise_for_status(); rows = r.json()
+            r.raise_for_status()
+            rows = r.json()
         if not rows:
             raise RuntimeError("Common Crawl returned no indexes")
         self._index = rows[0]
@@ -84,24 +97,39 @@ class CommonCrawlSource:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict): rows.append(row)
+            if isinstance(row, dict):
+                rows.append(row)
         selected = _spread(rows, limit)
-        return [ArchiveCapture(
-            engine="commoncrawl", original_url=str(x.get("url") or url),
-            capture_url=f"ccwarc://{x.get('filename')}#{x.get('offset')}:{x.get('length')}",
-            captured_at=str(x.get("timestamp") or ""), mime=str(x.get("mime") or x.get("mime-detected") or ""),
-            status=_int(x.get("status")), digest=str(x.get("digest") or ""), raw=x,
-        ) for x in selected]
+        return [
+            ArchiveCapture(
+                engine="commoncrawl",
+                original_url=str(x.get("url") or url),
+                capture_url=f"ccwarc://{x.get('filename')}#{x.get('offset')}:{x.get('length')}",
+                captured_at=str(x.get("timestamp") or ""),
+                mime=str(x.get("mime") or x.get("mime-detected") or ""),
+                status=_int(x.get("status")),
+                digest=str(x.get("digest") or ""),
+                raw=x,
+            )
+            for x in selected
+        ]
 
-    async def fetch_capture(self, capture: ArchiveCapture, *, max_bytes: int = 20_000_000) -> tuple[bytes, str]:
+    async def fetch_capture(
+        self, capture: ArchiveCapture, *, max_bytes: int = 20_000_000
+    ) -> tuple[bytes, str]:
         row = capture.raw or {}
-        filename, offset, length = str(row.get("filename") or ""), _int(row.get("offset")), _int(row.get("length"))
+        filename, offset, length = (
+            str(row.get("filename") or ""),
+            _int(row.get("offset")),
+            _int(row.get("length")),
+        )
         if not filename or offset is None or length is None or length <= 0 or length > max_bytes:
             raise RuntimeError("Invalid or oversized Common Crawl WARC range")
         headers = {"Range": f"bytes={offset}-{offset + length - 1}", "User-Agent": "TraceWeave/0.5"}
         async with httpx.AsyncClient(timeout=self.timeout, trust_env=False, headers=headers) as client:
             r = await client.get(f"https://data.commoncrawl.org/{filename}")
-            r.raise_for_status(); payload = r.content
+            r.raise_for_status()
+            payload = r.content
         if payload[:2] == b"\x1f\x8b":
             payload = gzip.decompress(payload)
         # A range normally contains one WARC response record. Keep parsing dependency-free:
@@ -117,7 +145,7 @@ class CommonCrawlSource:
         for line in headers_blob.splitlines():
             if line.lower().startswith("content-type:"):
                 ctype = line.split(":", 1)[1].strip().split(";", 1)[0]
-        return payload[header_end + 4:], ctype
+        return payload[header_end + 4 :], ctype
 
 
 def _spread(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -132,5 +160,7 @@ def _spread(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
 
 
 def _int(value: Any) -> int | None:
-    try: return int(value)
-    except (TypeError, ValueError): return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

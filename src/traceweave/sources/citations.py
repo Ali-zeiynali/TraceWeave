@@ -25,15 +25,19 @@ def extract_citation_leads(text: str, limit: int = 80) -> list[CitationLead]:
         clean = doi.rstrip(".,;:)")
         url = f"https://doi.org/{clean}"
         if url not in seen:
-            seen.add(url); out.append(CitationLead(url, "doi", clean))
+            seen.add(url)
+            out.append(CitationLead(url, "doi", clean))
     for aid in ARXIV_RE.findall(text):
         url = f"https://arxiv.org/abs/{aid}"
         if url not in seen:
-            seen.add(url); out.append(CitationLead(url, "arxiv", aid))
+            seen.add(url)
+            out.append(CitationLead(url, "arxiv", aid))
     for raw in URL_RE.findall(text):
-        url = canonicalize_url(raw.rstrip(".,;:)") )
+        url = canonicalize_url(raw.rstrip(".,;:)"))
         host = (urlsplit(url).hostname or "").casefold()
         if url.startswith(("http://", "https://")) and url not in seen and host:
-            seen.add(url); out.append(CitationLead(url, "url", host))
-        if len(out) >= limit: break
+            seen.add(url)
+            out.append(CitationLead(url, "url", host))
+        if len(out) >= limit:
+            break
     return out[:limit]

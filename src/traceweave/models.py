@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-ResearchMode = Literal["quick", "standard", "deep"]
+ResearchMode = Literal["quick", "standard", "deep", "overnight"]
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ResearchSpec(BaseModel):
@@ -22,6 +22,11 @@ class ResearchSpec(BaseModel):
     fetch_top_per_query: int = Field(default=4, ge=0, le=16)
     max_depth: int | None = Field(default=None, ge=0, le=5)
     max_frontier_pages: int | None = Field(default=None, ge=0, le=500)
+    deadline_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
+    max_model_calls: int | None = Field(default=None, ge=0, le=100_000)
+    max_vision_calls: int = Field(default=0, ge=0, le=10_000)
+    allow_remote_vision: bool = False
+    retention: Literal["manual", "90d"] = "manual"
 
     @field_validator("topic", "angle")
     @classmethod
@@ -31,17 +36,28 @@ class ResearchSpec(BaseModel):
     def resolved_rounds(self) -> int:
         if self.max_rounds is not None:
             return self.max_rounds
-        return {"quick": 1, "standard": 2, "deep": 4}[self.mode]
+        return {"quick": 1, "standard": 2, "deep": 4, "overnight": 8}[self.mode]
 
     def resolved_depth(self) -> int:
         if self.max_depth is not None:
             return self.max_depth
-        return {"quick": 0, "standard": 1, "deep": 3}[self.mode]
+        return {"quick": 0, "standard": 1, "deep": 3, "overnight": 4}[self.mode]
 
     def resolved_frontier_pages(self) -> int:
         if self.max_frontier_pages is not None:
             return self.max_frontier_pages
-        return {"quick": 0, "standard": 8, "deep": 30}[self.mode]
+        return {"quick": 0, "standard": 8, "deep": 30, "overnight": 120}[self.mode]
+
+    def resolved_deadline_minutes(self) -> int:
+        if self.deadline_minutes is not None:
+            return self.deadline_minutes
+        return {"quick": 10, "standard": 45, "deep": 180, "overnight": 720}[self.mode]
+
+    def resolved_model_calls(self) -> int:
+        if self.max_model_calls is not None:
+            return self.max_model_calls
+        # This is an attempt budget, not a successful-response budget. It includes route fallback.
+        return {"quick": 40, "standard": 120, "deep": 400, "overnight": 1_600}[self.mode]
 
 
 class Plan(BaseModel):

@@ -1,5 +1,5 @@
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from traceweave.storage import Storage
 
@@ -7,7 +7,7 @@ from traceweave.storage import Storage
 def test_v01_database_migrates_in_place(tmp_path: Path):
     db = tmp_path / "db.sqlite"
     with sqlite3.connect(db) as conn:
-        conn.executescript('''
+        conn.executescript("""
         CREATE TABLE runs (
           id TEXT PRIMARY KEY, topic TEXT NOT NULL, angle TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL,
           language TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -25,7 +25,7 @@ def test_v01_database_migrates_in_place(tmp_path: Path):
         CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, fetched_at TEXT NOT NULL,
           final_url TEXT NOT NULL,status_code INTEGER NOT NULL,content_type TEXT NOT NULL DEFAULT '',content_hash TEXT NOT NULL,
           raw_path TEXT,text_path TEXT,extracted_title TEXT NOT NULL DEFAULT '',UNIQUE(source_id,content_hash));
-        ''')
+        """)
     storage = Storage(db, tmp_path / "data")
     storage.init()
     with storage.connect() as conn:

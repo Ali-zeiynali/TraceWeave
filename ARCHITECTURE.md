@@ -18,6 +18,9 @@ Specialist Discovery    │
   ├─ Crossref           │
   ├─ arXiv              │
   └─ GitHub             │
+  ├─ GLEIF/ROR/ORCID    │
+  ├─ RDAP/DNS/RIPEstat  │
+  └─ Bluesky/Telegram   │
         ↓               │
 Fetch / Parse           │
   ├─ HTML/text          │
@@ -41,6 +44,14 @@ Gap-driven Re-planner ──┘
 Synthesizer / Exporter
 ```
 
+The same run also has a durable work plane:
+
+```text
+ResearchSpec → deadline/budgets → leased research_tasks → checkpoint/result
+                                    ↓
+source → snapshot → media_lead → content-addressed artifact → region observation
+```
+
 ## 1. Durable state boundaries
 
 SQLite is the v0.5 durable state store. It holds:
@@ -58,6 +69,8 @@ SQLite is the v0.5 durable state store. It holds:
 - citations
 - entities, relationships and timeline events
 - research edges and event log
+- leased research tasks/dependencies, deadline and model/vision budgets
+- content-addressed artifacts, media leads and importance/rarity-scored observations
 
 Large raw/text payloads are stored as compressed files under `.traceweave/` and referenced from SQLite.
 
@@ -153,6 +166,14 @@ TUI sessions persist separately from research runs, so switching sessions change
 - Web content is untrusted data and is never interpreted as system/tool instructions.
 - The local shell is an operator convenience, disabled by default, and is not exposed to the LLM or web content.
 - Specialist adapters use public APIs/public repositories/public archives; no credential harvesting or authenticated/private crawling is implemented.
+- Telegram uses an operator-authorized official user session but only persists globally searchable messages that have a
+  public `t.me` URL. LinkedIn is official/indexed/import only; fake-account scraping and access bypass are not implemented.
+- Remote vision is globally disabled by default, requires per-run opt-in, has its own hard budget, and cannot identify a
+  person from a face or analyze minors.
+- The OpenAI-compatible mesh supports five credential slots per provider and three Cloudflare account pairs. Catalogs and
+  health remain credential scoped; network circuits prevent one unstable gateway from exhausting every model retry.
+- JS-heavy public-page fallback can rotate Cloudflare Browser Rendering `/markdown` accounts before loading a local browser.
+  It never bypasses authentication, CAPTCHA, robots policy or private-network validation.
 
 ## 9. Extension points
 
@@ -164,3 +185,5 @@ Future stages can add adapters without changing the core evidence model:
 - GraphRAG/corpus community summaries
 - distributed workers/Redis/PostgreSQL when one-node SQLite becomes a bottleneck
 - richer TUI graph/timeline views
+- typed allowlisted MCP source adapters. Arbitrary MCP tools are not exposed to the model because a server may contain
+  mutating, private-data or active-network capabilities.

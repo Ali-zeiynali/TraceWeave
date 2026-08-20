@@ -21,7 +21,7 @@ Return JSON only:
       "predicate": "optional normalized relation/action",
       "object": "optional object",
       "observed_at": "date/time if SOURCE explicitly supplies it, else null",
-      "confidence": 0.0
+      "confidence": 0.85
     }
   ]
 }

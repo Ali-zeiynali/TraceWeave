@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 
 class LLMError(RuntimeError):
@@ -23,5 +23,12 @@ class ProviderFailure(LLMError):
 class LLMProvider(Protocol):
     name: str
 
-    async def json(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> dict: ...
-    async def text(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> str: ...
+    async def json(
+        self, *, system: str, user: str, task: str = "general", run_id: str | None = None
+    ) -> dict: ...
+    async def text(
+        self, *, system: str, user: str, task: str = "general", run_id: str | None = None
+    ) -> str: ...
+    async def vision_json(
+        self, *, system: str, user: str, image: bytes, media_type: str, run_id: str
+    ) -> dict: ...

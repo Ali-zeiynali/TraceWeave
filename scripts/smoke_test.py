@@ -1,4 +1,5 @@
 """Offline smoke test: storage + iterative engine using a fake search backend."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +17,11 @@ class FakeSearch:
     name = "smoke"
 
     async def search(self, query: str, *, limit: int, language: str):
-        return [SearchResult(url=f"https://example.com/{len(query)}", title=query, snippet="smoke", engine="smoke")]
+        return [
+            SearchResult(
+                url=f"https://example.com/{len(query)}", title=query, snippet="smoke", engine="smoke"
+            )
+        ]
 
 
 class Engine(ResearchEngine):
@@ -27,7 +32,14 @@ class Engine(ResearchEngine):
 async def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        settings = Settings(data_dir=root / "data", archives_enabled=False, academic_enabled=False, github_enabled=False, entity_graph_enabled=False, frontier_enabled=False)
+        settings = Settings(
+            data_dir=root / "data",
+            archives_enabled=False,
+            academic_enabled=False,
+            github_enabled=False,
+            entity_graph_enabled=False,
+            frontier_enabled=False,
+        )
         settings.ensure_dirs()
         storage = Storage(settings.db_path, settings.data_dir)
         storage.init()
@@ -38,7 +50,9 @@ async def main() -> None:
             planner=Planner(None),
             provider=None,
         )
-        run_id = await engine.start(ResearchSpec(topic="TraceWeave smoke test", max_rounds=2, fetch_top_per_query=0))
+        run_id = await engine.start(
+            ResearchSpec(topic="TraceWeave smoke test", max_rounds=2, fetch_top_per_query=0)
+        )
         row = storage.get_run(run_id)
         assert row and row["status"] == "completed" and row["current_round"] == 2
         assert storage.sources_for_run(run_id)

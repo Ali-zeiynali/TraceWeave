@@ -35,13 +35,15 @@ class SearXNGSearch:
             url = item.get("url")
             if not url:
                 continue
-            results.append(SearchResult(
-                url=url,
-                title=item.get("title") or "",
-                snippet=item.get("content") or "",
-                engine=", ".join(item.get("engines") or [item.get("engine", "searxng")]),
-                category=item.get("category") or "web",
-                published_at=str(item.get("publishedDate")) if item.get("publishedDate") else None,
-                raw={k: v for k, v in item.items() if k not in {"img_src"}},
-            ))
+            results.append(
+                SearchResult(
+                    url=url,
+                    title=item.get("title") or "",
+                    snippet=item.get("content") or "",
+                    engine=", ".join(item.get("engines") or [item.get("engine", "searxng")]),
+                    category=item.get("category") or "web",
+                    published_at=str(item.get("publishedDate")) if item.get("publishedDate") else None,
+                    raw={k: v for k, v in item.items() if k not in {"img_src"}},
+                )
+            )
         return results

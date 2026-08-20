@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ class ModelCatalog:
     Shape on disk: providers -> provider_id -> credential_id -> [normalized models].
     Raw API tokens are never stored.
     """
+
     def __init__(self, path: Path, ttl_seconds: int = 21600):
         self.path = path
         self.ttl_seconds = ttl_seconds
@@ -38,14 +40,17 @@ class ModelCatalog:
         except (AttributeError, TypeError, ValueError):
             return True
 
-    async def sync_provider(self, provider_id: str, credential_id: str, *, token: str = "", base_url: str, timeout: float = 20) -> list[dict[str, Any]]:
+    async def sync_provider(
+        self, provider_id: str, credential_id: str, *, token: str = "", base_url: str, timeout: float = 20
+    ) -> list[dict[str, Any]]:
         base = base_url.rstrip("/")
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.get(f"{base}/models", headers=headers)
-            response.raise_for_status(); body = response.json()
+            response.raise_for_status()
+            body = response.json()
         rows = body.get("data", body) if isinstance(body, dict) else body
         if not isinstance(rows, list):
             raise ValueError(f"{provider_id} /models returned an unsupported shape")
@@ -54,12 +59,14 @@ class ModelCatalog:
         current = self.metadata()
         providers = current.get("providers", {}) if isinstance(current.get("providers"), dict) else {}
         per_provider = providers.get(provider_id, {}) if isinstance(providers.get(provider_id), dict) else {}
-        per_provider[credential_id] = normalized; providers[provider_id] = per_provider
+        per_provider[credential_id] = normalized
+        providers[provider_id] = per_provider
         stamps = current.get("updated_at", {}) if isinstance(current.get("updated_at"), dict) else {}
         stamps[f"{provider_id}:{credential_id}"] = time.time()
         payload = {"version": 2, "updated_at": stamps, "providers": providers}
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"); tmp.replace(self.path)
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.path)
         return normalized
 
     @staticmethod
@@ -69,7 +76,9 @@ class ModelCatalog:
         if provider_id == "openrouter":
             pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
             try:
-                is_free = float(pricing.get("prompt", "nan")) == 0 and float(pricing.get("completion", "nan")) == 0
+                is_free = (
+                    float(pricing.get("prompt", "nan")) == 0 and float(pricing.get("completion", "nan")) == 0
+                )
             except (TypeError, ValueError):
                 is_free = model_id.endswith(":free")
             is_free = bool(is_free or model_id.endswith(":free") or model_id == "openrouter/free")
@@ -77,8 +86,24 @@ class ModelCatalog:
             is_free = model_id.endswith("-free") or "free" in str(row.get("name", "")).casefold()
             pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
             if pricing:
-                try:
-                    is_free = is_free or (float(pricing.get("input", pricing.get("prompt", "nan"))) == 0 and float(pricing.get("output", pricing.get("completion", "nan"))) == 0)
-                except (TypeError, ValueError):
-                    pass
+                with suppress(TypeError, ValueError):
+                    is_free = is_free or (
+                        float(pricing.get("input", pricing.get("prompt", "nan"))) == 0
+                        and float(pricing.get("output", pricing.get("completion", "nan"))) == 0
+                    )
+        else:
+            # Community gateways use several catalog shapes. Admit a route as free only when
+            # the catalog says so, its id is explicitly free, or both token prices are zero.
+            explicit = row.get("is_free", row.get("free"))
+            if isinstance(explicit, bool):
+                is_free = explicit
+            if ":free" in model_id.casefold() or model_id.casefold().endswith("-free"):
+                is_free = True
+            pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+            if pricing:
+                prompt = pricing.get("prompt", pricing.get("input"))
+                completion = pricing.get("completion", pricing.get("output"))
+                if prompt is not None and completion is not None:
+                    with suppress(TypeError, ValueError):
+                        is_free = float(prompt) == 0 and float(completion) == 0
         return {"id": model_id, "is_free": is_free, "raw": row}

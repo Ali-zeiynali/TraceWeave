@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from traceweave.graph import GraphCurator
+from traceweave.config import Settings
 from traceweave.fetcher import extract_payload
+from traceweave.graph import GraphCurator
 from traceweave.models import ResearchSpec, SearchResult
 from traceweave.providers.catalog import ModelCatalog
 from traceweave.providers.config import load_provider_config
 from traceweave.sources.citations import extract_citation_leads
 from traceweave.storage import Storage
-from traceweave.config import Settings
 
 
 def _storage(tmp_path: Path) -> Storage:
@@ -21,18 +20,22 @@ def _storage(tmp_path: Path) -> Storage:
     return s
 
 
-def test_builtin_provider_env_accepts_three_tokens_and_scopes_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_builtin_provider_env_accepts_three_tokens_and_scopes_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GROQ_API_KEY", "a")
     monkeypatch.setenv("GROQ_API_KEY_2", "b")
     monkeypatch.setenv("GROQ_API_KEY_3", "c")
     catalog_path = tmp_path / "data" / "catalog" / "models.json"
-    catalog = ModelCatalog(catalog_path)
+    ModelCatalog(catalog_path)
     catalog_path.write_text(
         '{"version":2,"updated_at":{},"providers":{"groq":{"token-1":[{"id":"only-a","is_free":null,"raw":{}}],"token-2":[{"id":"only-b","is_free":null,"raw":{}}],"token-3":[{"id":"only-c","is_free":null,"raw":{}}]}}}',
         encoding="utf-8",
     )
-    cfg = load_provider_config(Settings(data_dir=tmp_path / "data", provider_config=tmp_path / "missing.toml"))
+    cfg = load_provider_config(
+        Settings(data_dir=tmp_path / "data", provider_config=tmp_path / "missing.toml")
+    )
     groq = next(p for p in cfg.providers if p.id == "groq")
     assert [c.id for c in groq.credentials] == ["token-1", "token-2", "token-3"]
     routes = {(next(iter(m.credentials)), m.name) for m in groq.models}
@@ -65,9 +68,18 @@ async def test_graph_curator_fallback_is_claim_grounded(tmp_path: Path):
     sid = s.add_search_result(run, "q", 1, SearchResult(url="https://example.com", title="x"))
     # Build the same tables through public storage methods used by EvidenceAnalyzer.
     claim_id = s.add_claim(
-        run, sid, claim_text="Acme acquired Beta in 2025", subject="Acme", predicate="acquired",
-        object_text="Beta", observed_at="2025", confidence=0.9, quote="Acme acquired Beta in 2025",
-        char_start=0, char_end=26, verified_span=True,
+        run,
+        sid,
+        claim_text="Acme acquired Beta in 2025",
+        subject="Acme",
+        predicate="acquired",
+        object_text="Beta",
+        observed_at="2025",
+        confidence=0.9,
+        quote="Acme acquired Beta in 2025",
+        char_start=0,
+        char_end=26,
+        verified_span=True,
     )
     stats = await GraphCurator(s, None).curate(run, ResearchSpec(topic="graph"))
     assert stats["entities"] >= 2 and stats["relationships"] >= 1 and stats["timeline"] >= 1
@@ -77,10 +89,15 @@ async def test_graph_curator_fallback_is_claim_grounded(tmp_path: Path):
 
 def test_pdf_pipeline_accepts_stage4_documents():
     from io import BytesIO
+
     from pypdf import PdfWriter
+
     writer = PdfWriter()
     writer.add_blank_page(width=200, height=200)
     writer.add_metadata({"/Title": "Fixture report"})
-    buf = BytesIO(); writer.write(buf)
-    text, title, links, feeds = extract_payload(buf.getvalue(), "application/pdf", "https://example.org/report.pdf")
+    buf = BytesIO()
+    writer.write(buf)
+    text, title, links, feeds = extract_payload(
+        buf.getvalue(), "application/pdf", "https://example.org/report.pdf"
+    )
     assert title == "Fixture report" and links == [] and feeds == []

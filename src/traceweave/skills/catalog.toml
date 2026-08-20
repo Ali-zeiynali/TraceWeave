@@ -37,3 +37,17 @@ tasks = ["replanning", "synthesis"]
 name = "entity-graph"
 file = "entity_graph.md"
 tasks = ["entity_extraction", "replanning", "synthesis"]
+
+[[skills]]
+name = "web-content-firewall"
+version = "1.0"
+file = "web_content_firewall.md"
+tasks = ["planning", "replanning", "triage", "claim_extraction", "entity_extraction", "vision", "synthesis"]
+priority = 1
+
+[[skills]]
+name = "verification"
+version = "1.0"
+file = "verification.md"
+tasks = ["verification", "replanning", "synthesis"]
+priority = 20

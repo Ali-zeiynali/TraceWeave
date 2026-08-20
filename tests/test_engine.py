@@ -6,7 +6,7 @@ import pytest
 
 from traceweave.config import Settings
 from traceweave.engine import ResearchEngine
-from traceweave.models import Plan, ResearchSpec, SearchResult
+from traceweave.models import ResearchSpec, SearchResult
 from traceweave.planner import Planner
 from traceweave.storage import Storage
 
@@ -37,8 +37,11 @@ async def test_plan_search_replan_and_resumeable_state(tmp_path: Path):
     settings = Settings(
         data_dir=tmp_path / "data",
         search_backend="ddgs",
-        archives_enabled=False, academic_enabled=False, github_enabled=False,
-        entity_graph_enabled=False, frontier_enabled=False,
+        archives_enabled=False,
+        academic_enabled=False,
+        github_enabled=False,
+        entity_graph_enabled=False,
+        frontier_enabled=False,
     )
     settings.ensure_dirs()
     storage = Storage(settings.db_path, settings.data_dir)

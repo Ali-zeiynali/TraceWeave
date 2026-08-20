@@ -10,6 +10,12 @@ Score each 0..100:
 - novelty: adds information, terminology, entities, dates, documents, citations or leads not already represented in the provided prior-source capsules.
 - authority: source quality for what it actually claims. Primary/official is often high for its own statements, but not automatically unbiased. Independent specialist reporting can also be strong.
 
+When the research goal names a date or time window, an undated current-state page may be useful background but should not receive high relevance/importance as evidence of a change in that period unless its content explicitly supplies the date.
+
+Classify value under the requested angle. A small visual/textual detail can have high importance and novelty
+when it names an unreleased product, relationship, date or location, but only if it is grounded in the supplied
+source/artifact. Repeated popularity is not rarity and visual inference is not proof of identity.
+
 Return JSON only:
 {
   "relevance": 0,

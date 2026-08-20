@@ -27,14 +27,16 @@ class DDGSSearch:
                 url = item.get("href") or item.get("url")
                 if not url:
                     continue
-                out.append(SearchResult(
-                    url=url,
-                    title=item.get("title") or "",
-                    snippet=item.get("body") or item.get("description") or "",
-                    engine=item.get("source") or "ddgs",
-                    category="web",
-                    raw=dict(item),
-                ))
+                out.append(
+                    SearchResult(
+                        url=url,
+                        title=item.get("title") or "",
+                        snippet=item.get("body") or item.get("description") or "",
+                        engine=item.get("source") or "ddgs",
+                        category="web",
+                        raw=dict(item),
+                    )
+                )
         except Exception as exc:
             errors.append(f"text: {exc}")
 
@@ -45,15 +47,17 @@ class DDGSSearch:
                 url = item.get("url") or item.get("href")
                 if not url:
                     continue
-                out.append(SearchResult(
-                    url=url,
-                    title=item.get("title") or "",
-                    snippet=item.get("body") or item.get("excerpt") or "",
-                    engine=item.get("source") or "ddgs-news",
-                    category="news",
-                    published_at=item.get("date"),
-                    raw=dict(item),
-                ))
+                out.append(
+                    SearchResult(
+                        url=url,
+                        title=item.get("title") or "",
+                        snippet=item.get("body") or item.get("excerpt") or "",
+                        engine=item.get("source") or "ddgs-news",
+                        category="news",
+                        published_at=item.get("date"),
+                        raw=dict(item),
+                    )
+                )
         except Exception as exc:
             errors.append(f"news: {exc}")
 

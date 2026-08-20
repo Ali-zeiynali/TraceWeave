@@ -8,6 +8,9 @@ Use source capsules, grounded claims, and research_state. Look for:
 - missing primary documents
 - source classes not yet covered (official, independent reporting, documents, academic, archive, code)
 - citations or archival leads that could change the investigation
+- image/video/OCR observations and their exact artifact regions
+- native-language aliases, local registries, local reporting and local social terminology
+- rare high-information breadcrumbs that connect otherwise separate graph branches
 
 Never treat snippets as proof. Do not repeat completed queries unless a materially different source class/filter is needed.
 Return strict JSON with objective, focus, queries, rationale, gaps, source_classes.

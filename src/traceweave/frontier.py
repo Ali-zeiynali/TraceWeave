@@ -22,7 +22,9 @@ class FrontierDecision:
 
 
 class FrontierManager:
-    def __init__(self, storage: Storage, fetcher: SafeFetcher, *, user_agent: str, respect_robots: bool = True):
+    def __init__(
+        self, storage: Storage, fetcher: SafeFetcher, *, user_agent: str, respect_robots: bool = True
+    ):
         self.storage = storage
         self.fetcher = fetcher
         self.user_agent = user_agent
@@ -41,15 +43,36 @@ class FrontierManager:
         if link.relation == "citation":
             score += 0.16
         low = target.casefold()
-        if any(x in low for x in (".pdf", "/report", "/research", "/press", "/news", "/blog", "/docs", "/publication", "/investor")):
+        if any(
+            x in low
+            for x in (
+                ".pdf",
+                "/report",
+                "/research",
+                "/press",
+                "/news",
+                "/blog",
+                "/docs",
+                "/publication",
+                "/investor",
+            )
+        ):
             score += 0.12
         if any(x in low for x in ("/login", "/signup", "/privacy", "/terms", "/cart", "/account")):
             score -= 0.35
         score -= max(0, depth - 1) * 0.035
         return max(0.0, min(1.0, score))
 
-    def add_page_links(self, run_id: str, spec: ResearchSpec, *, source_id: int, parent_url: str,
-                       links: list[PageLink], depth: int) -> int:
+    def add_page_links(
+        self,
+        run_id: str,
+        spec: ResearchSpec,
+        *,
+        source_id: int,
+        parent_url: str,
+        links: list[PageLink],
+        depth: int,
+    ) -> int:
         if depth > spec.resolved_depth():
             return 0
         added = 0
@@ -58,8 +81,13 @@ class FrontierManager:
             if score < 0.03:
                 continue
             if self.storage.add_frontier(
-                run_id, link.url, parent_source_id=source_id, anchor=link.anchor,
-                relation=link.relation, depth=depth, score=score,
+                run_id,
+                link.url,
+                parent_source_id=source_id,
+                anchor=link.anchor,
+                relation=link.relation,
+                depth=depth,
+                score=score,
             ):
                 added += 1
         return added
@@ -92,7 +120,9 @@ class FrontierManager:
         origin = f"{parts.scheme}://{parts.netloc}"
         sitemap_urls = {urljoin(origin + "/", "sitemap.xml")}
         try:
-            robots = await self.fetcher.fetch(urljoin(origin + "/", "robots.txt"), accept="text/plain,*/*;q=0.1")
+            robots = await self.fetcher.fetch(
+                urljoin(origin + "/", "robots.txt"), accept="text/plain,*/*;q=0.1"
+            )
             for line in robots.text.splitlines():
                 if line.casefold().startswith("sitemap:"):
                     sitemap_urls.add(line.split(":", 1)[1].strip())
@@ -122,7 +152,13 @@ class FrontierManager:
             link = PageLink(url=url, anchor="sitemap", relation="sitemap")
             score = self.score_link(spec, page_url, link, depth=1)
             if self.storage.add_frontier(
-                run_id, url, parent_source_id=source_id, anchor="sitemap", relation="sitemap", depth=1, score=score
+                run_id,
+                url,
+                parent_source_id=source_id,
+                anchor="sitemap",
+                relation="sitemap",
+                depth=1,
+                score=score,
             ):
                 added += 1
         return added

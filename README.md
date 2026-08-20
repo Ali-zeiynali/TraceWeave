@@ -13,9 +13,14 @@ It is deliberately **not** a single giant agent prompt. Crawling, provenance, pe
 - Credential-scoped model catalogs: provider → token → model. Different tokens on the same router may expose different models.
 - Dynamic routing health at credential, deployment (`token+model`), and task (`token+model+task`) levels.
 - Dynamic cooldown from `Retry-After` / rate-limit headers plus exponential fallback TTLs.
-- Built-in provider presets activated by `.env`; up to three tokens/provider without writing TOML.
+- Built-in provider presets activated by `.env`; up to five tokens/provider without writing TOML.
 - Minimal OpenCode-style TUI landing screen: centered input, folder, selected planning route, rotating tip. Workspace appears only after research starts or is resumed.
 - Durable sessions, pause/resume, full source provenance, archives/citations/graph exports.
+- Quick/Standard/Deep/Overnight modes with persistent deadlines, model budgets, leased round tasks and crash recovery.
+- Passive registry discovery (GLEIF, ROR, ORCID, RDAP, DNS-over-HTTPS, RIPEstat) and public Bluesky/optional official Telegram search.
+- Prompt-first `traceweave ask "..."`, multilingual intent parsing, refusal/evasion fallback, per-task timeouts, and a provider-usage dashboard.
+- No-key GDELT, MediaWiki and Hacker News discovery; official Instagram professional-account hashtag discovery when configured.
+- Content-addressed public images, region-level observations, separately budgeted opt-in remote vision, and GraphML export.
 
 ## Safety / scope
 
@@ -37,6 +42,7 @@ pip install -e ".[stage4]"
 Copy-Item .env.example .env
 traceweave doctor
 traceweave
+traceweave ask "یک گزارش کوتاه درباره Cloudflare Workers AI بده"
 ```
 
 ### Ubuntu VPS
@@ -51,6 +57,7 @@ pip install -e '.[stage4]'
 cp .env.example .env
 traceweave doctor
 traceweave
+traceweave ask "research the public product and company history of Example Corp"
 ```
 
 For optional provider adapters via LiteLLM:
@@ -66,7 +73,9 @@ pip install -e '.[full]'
 crawl4ai-setup
 ```
 
-Browser fallback is off by default and should remain limited on an 8 GB VPS.
+Browser fallback is off by default and should remain limited on an 8 GB VPS. `TRACEWEAVE_BROWSER_BACKEND=auto`
+prefers configured Cloudflare Browser Rendering `/markdown` accounts before the heavier local browser; up to three
+Cloudflare account/token pairs can rotate under normal quotas.
 
 ## Provider mesh: zero-config path
 
@@ -76,16 +85,26 @@ Put any keys you have in `.env`:
 GROQ_API_KEY=...
 GROQ_API_KEY_2=...
 GROQ_API_KEY_3=...
+GROQ_API_KEY_4=...
+GROQ_API_KEY_5=...
 
 GEMINI_API_KEY=...
 OPENROUTER_API_KEY=...
 MISTRAL_API_KEY=...
+CEREBRAS_API_KEY=...
+SAMBANOVA_API_KEY=...
+CLOUDFLARE_API_KEY=...
+CLOUDFLARE_ACCOUNT_ID=...
+NVIDIA_API_KEY=...
+NARAROUTER_API_KEY=...
+AIGATE_API_KEY=...
 ZENMUX_API_KEY=...
 SEEKROUTER_API_KEY=...
 AGENTROUTER_API_KEY=...
 ```
 
-Each provider accepts `KEY`, `KEY_2`, and `KEY_3` (`KEY_1` is also accepted instead of the unnumbered first key). Raw tokens are never persisted in router-health or catalog files.
+Each provider accepts `KEY` through `KEY_5` (`KEY_1` is also accepted instead of the unnumbered first key). Cloudflare
+supports matching `CLOUDFLARE_ACCOUNT_ID[_2|_3]` pairs. Raw tokens are never persisted in router-health or catalog files.
 
 Built-in presets currently cover:
 
@@ -98,6 +117,12 @@ Built-in presets currently cover:
 | ZenMux | curated `*-free` GLM routes + dynamic zero-price filtering; requires an API-enabled ZenMux account |
 | AgentRouter | curated strong bootstrap models + per-token `/models` discovery |
 | SeekRouter | per-token `/models` discovery; base URL is overrideable |
+| Cerebras | free-tier GPT-OSS/GLM bootstrap + per-token catalog |
+| SambaNova | free-tier bootstrap + per-token catalog |
+| Cloudflare Workers AI | only `@cf/*` models; account ID required |
+| NVIDIA NIM | separate text/vision routes, dynamic catalog; one generic key can feed both roles |
+| NaraRouter | entitlement-scoped dynamic catalog and per-token health |
+| AIGate | dynamic catalog, isolated as an unstable operator-provided gateway |
 
 Run:
 
@@ -119,6 +144,7 @@ Type a topic directly or use commands:
 /research semiconductor supply chain in Europe
 /angle ownership, suppliers and historical changes
 /mode deep
+/mode overnight
 /depth 3
 /budget 30
 /providers sync
@@ -129,6 +155,7 @@ Type a topic directly or use commands:
 /entities
 /timeline
 /export mermaid
+/export graphml
 ```
 
 Use `F1` for in-app help. Command suggestions use Textual's input suggester; Right Arrow accepts a suggestion. Up/Down traverses local command history. Submitted commands are cleared automatically.
@@ -168,6 +195,10 @@ A historical capture is stored as time-scoped evidence and does not overwrite th
 
 Default `.traceweave/` contains SQLite state, compressed source snapshots, archive captures, exports, catalog metadata, and durable sessions. It is intentionally ignored by Git.
 
+Overnight runs default to a 12-hour deadline, eight research rounds, depth four and a 120-page frontier. Override with
+`--deadline-minutes`, `--rounds`, `--depth`, `--frontier-budget`, and `--max-model-calls`. State is checkpointed in SQLite;
+expired task/frontier leases are recovered on resume.
+
 Back up `.traceweave/traceweave.db*` and `.env` before moving machines.
 
 ## Tests
@@ -187,6 +218,7 @@ python -m build
 - `USAGE.md` — operator guide and TUI commands
 - `ARCHITECTURE.md` — component boundaries, state, routing and long-horizon design
 - `docs/PROVIDERS.md` — provider/token/model routing
+- `docs/OSINT_SOURCES.md` — stable/conditional sources, tokens, social/media policy and excluded active techniques
 - `docs/STAGE4.md` — archives, academic, GitHub, PDF and citation flow
 - `docs/GRAPH.md` — Stage 5 graph foundation
 - `docs/CONFIGURATION.md` — environment reference

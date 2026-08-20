@@ -10,6 +10,7 @@ class CredentialConfig:
     id: str
     token_env: str
     enabled: bool = True
+    base_url: str = ""
 
     def token(self) -> str:
         return os.getenv(self.token_env, "").strip()

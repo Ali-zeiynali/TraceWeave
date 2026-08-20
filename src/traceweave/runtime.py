@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from traceweave.config import Settings
+from traceweave.config import Settings, load_project_env
 from traceweave.engine import ProgressCallback, ResearchEngine
 from traceweave.planner import Planner
 from traceweave.providers.factory import build_provider
@@ -20,13 +20,18 @@ class Runtime:
 
 
 def build_runtime(callback: ProgressCallback | None = None, settings: Settings | None = None) -> Runtime:
+    load_project_env()
     settings = settings or Settings()
     settings.ensure_dirs()
     storage = Storage(settings.db_path, settings.data_dir)
     storage.init()
     provider = build_provider(settings, storage)
     engine = ResearchEngine(
-        settings=settings, storage=storage, search=build_search(settings), planner=Planner(provider),
-        provider=provider, callback=callback,
+        settings=settings,
+        storage=storage,
+        search=build_search(settings),
+        planner=Planner(provider),
+        provider=provider,
+        callback=callback,
     )
     return Runtime(settings=settings, storage=storage, engine=engine, router=provider)
