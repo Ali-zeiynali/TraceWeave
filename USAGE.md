@@ -32,7 +32,7 @@ Type a topic and press Enter. The research workspace is mounted visually only af
 ```text
 /research TOPIC
 /angle TEXT
-/mode quick|standard|deep
+/mode quick|standard|deep|overnight
 /rounds N
 /depth 0..5
 /budget N
@@ -46,6 +46,8 @@ Modes provide defaults, but explicit `/rounds`, `/depth`, and `/budget` override
 - `quick`: one round; no deep recursive traversal.
 - `standard`: two rounds, light specialist/archive work, shallow frontier.
 - `deep`: multiple plan/search/re-plan rounds, academic/code sources, archives, citation snowballing, and best-first recursive traversal.
+
+- `overnight`: ten rounds, depth five, a 300-page frontier and a durable 24-hour deadline.
 
 ## 4. Inspect durable research state
 
@@ -76,7 +78,7 @@ traceweave router-log
 
 ## 5. Providers
 
-No `providers.toml` is required for the built-in provider mesh. Put up to three tokens/provider in `.env`, then:
+No `providers.toml` is required for the built-in provider mesh. Put up to five tokens/provider in `.env`, then:
 
 ```text
 /providers
@@ -143,9 +145,24 @@ traceweave export RUN_ID --format mermaid
 traceweave export RUN_ID --format evidence
 ```
 
-JSON contains sources/discoveries, claims, frontier, archive captures, citations, entities, relationships, timeline events, research edges, and event log. Mermaid includes the search trail and a bounded entity/relationship overlay.
+JSON contains queries, provider-usage telemetry, sources/discoveries, claims, frontier, archive captures,
+citations, entities, relationships, timeline events, artifacts, observations, research edges, and event log.
+Mermaid includes the search trail and a bounded entity/relationship overlay.
 
-## 9. Stage 4 configuration
+## 9. Local media analysis
+
+    pip install -e '.[media]'
+
+Install Tesseract language packs on the host for OCR. The larger optional OpenCV layer is installed with
+`.[media-advanced]`. Deterministic metadata/OCR/hash/quality analysis runs before opt-in remote vision. Important
+public OCR/Vision observations are fed back into re-planning as traceable follow-up queries and into synthesis as
+explicitly uncorroborated visual leads; raw observations remain in SQLite and `findings.json`.
+
+For repeatable end-to-end checks, run `python scripts/benchmark_agent.py --help`. The harness invokes the public
+prompt-first CLI and records latency, query-language coverage, citations, graph edges, observations, token usage,
+and provider failures without reading or printing key values.
+
+## 10. Stage 4 configuration
 
 Useful `.env` knobs:
 

@@ -41,7 +41,9 @@ See `.env.example` for a complete copy/paste template.
 Quick/Standard/Deep/Overnight mode. Registry/social/media settings include
 `TRACEWEAVE_REGISTRY_SOURCES_ENABLED`, `TRACEWEAVE_PUBLIC_SOCIAL_ENABLED`, `TRACEWEAVE_BLUESKY_ENABLED`,
 `TRACEWEAVE_TELEGRAM_PUBLIC_ENABLED`, `TRACEWEAVE_MEDIA_ENABLED`, `TRACEWEAVE_MEDIA_MAX_BYTES`, and
-`TRACEWEAVE_REMOTE_VISION_ENABLED`. Official Instagram hashtag discovery additionally uses
+`TRACEWEAVE_REMOTE_VISION_ENABLED`.
+`TRACEWEAVE_RESEARCH_QUERY_CONCURRENCY` controls independent query branches (default 3; fetch concurrency remains separate).
+Official Instagram hashtag discovery additionally uses
 `TRACEWEAVE_INSTAGRAM_OFFICIAL_ENABLED`, `INSTAGRAM_ACCESS_TOKEN`, and `INSTAGRAM_USER_ID`.
 
 ## Router

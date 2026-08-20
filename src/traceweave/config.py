@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     fetch_max_bytes: int = 3_000_000
     fetch_concurrency: int = Field(default=4, ge=1, le=16)
     user_agent: str = "TraceWeave/0.5 (+https://github.com/traceweave/traceweave)"
+    research_query_concurrency: int = Field(default=3, ge=1, le=8)
     respect_robots: bool = True
 
     provider_config: Path = Path("providers.toml")
@@ -131,5 +132,5 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("sources", "exports", "sessions", "logs", "artifacts", "catalog"):
+        for name in ("sources", "exports", "cases", "sessions", "logs", "artifacts", "catalog"):
             (self.data_dir / name).mkdir(parents=True, exist_ok=True)

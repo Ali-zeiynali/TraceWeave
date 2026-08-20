@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -143,6 +145,8 @@ class Exporter:
                 if self.storage.get_plan(run_id, i)
             ],
             "sources": [s.model_dump() for s in self.storage.sources_for_run(run_id, 5000)],
+            "queries": self.storage.queries_for_run(run_id),
+            "provider_usage": self.storage.provider_usage(run_id=run_id, limit=1000),
             "discoveries": self.storage.discoveries_for_run(run_id, 10000),
             "claims": self.storage.claims_for_run(run_id, 5000),
             "frontier": self.storage.frontier_for_run(run_id, 10000),
@@ -270,6 +274,68 @@ class Exporter:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
 
+    def case(self, run_id: str) -> Path:
+        """Refresh a self-contained, human-readable case workspace for an active run."""
+        run = self._run(run_id)
+        case_dir = self.export_dir / run_id
+        case_dir.mkdir(parents=True, exist_ok=True)
+        scoped = Exporter(self.storage, case_dir)
+        markdown = scoped.markdown(run_id)
+        findings = scoped.json(run_id)
+        mermaid = scoped.mermaid(run_id)
+        graphml = scoped.graphml(run_id)
+        evidence = scoped.evidence(run_id)
+        shutil.copy2(markdown, case_dir / "report.md")
+        shutil.copy2(findings, case_dir / "findings.json")
+
+        observations = self.storage.observations_for_run(run_id, 10_000)
+        important = {
+            str(item["artifact_id"])
+            for item in observations
+            if item.get("artifact_id") and float(item.get("importance") or 0) >= 60
+        }
+        media_dir = case_dir / "media"
+        media_dir.mkdir(exist_ok=True)
+        media_index: list[dict[str, object]] = []
+        for artifact in self.storage.artifacts_for_run(run_id, 10_000):
+            if important and str(artifact["id"]) not in important:
+                continue
+            source = Path(str(artifact.get("path") or ""))
+            if not source.is_file():
+                continue
+            suffix = source.suffix or ".bin"
+            target = media_dir / f"{artifact['id']}{suffix}"
+            if not target.exists():
+                try:
+                    os.link(source, target)
+                except OSError:
+                    shutil.copy2(source, target)
+            media_index.append(
+                {
+                    "artifact_id": artifact["id"],
+                    "source_id": artifact.get("source_id"),
+                    "media_type": artifact.get("media_type"),
+                    "sha256": artifact.get("sha256"),
+                    "path": str(target.relative_to(case_dir)),
+                }
+            )
+
+        manifest = {
+            "run_id": run_id,
+            "topic": run["topic"],
+            "status": run["status"],
+            "updated_at": run["updated_at"],
+            "report": "report.md",
+            "findings": "findings.json",
+            "evidence": evidence.name,
+            "mermaid": mermaid.name,
+            "graphml": graphml.name,
+            "important_media": media_index,
+        }
+        (case_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
+        return case_dir
     def _run(self, run_id: str) -> dict:
         run = self.storage.get_run(run_id)
         if not run:

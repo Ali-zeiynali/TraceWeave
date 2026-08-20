@@ -36,28 +36,28 @@ class ResearchSpec(BaseModel):
     def resolved_rounds(self) -> int:
         if self.max_rounds is not None:
             return self.max_rounds
-        return {"quick": 1, "standard": 2, "deep": 4, "overnight": 8}[self.mode]
+        return {"quick": 1, "standard": 2, "deep": 6, "overnight": 10}[self.mode]
 
     def resolved_depth(self) -> int:
         if self.max_depth is not None:
             return self.max_depth
-        return {"quick": 0, "standard": 1, "deep": 3, "overnight": 4}[self.mode]
+        return {"quick": 0, "standard": 1, "deep": 4, "overnight": 5}[self.mode]
 
     def resolved_frontier_pages(self) -> int:
         if self.max_frontier_pages is not None:
             return self.max_frontier_pages
-        return {"quick": 0, "standard": 8, "deep": 30, "overnight": 120}[self.mode]
+        return {"quick": 0, "standard": 8, "deep": 80, "overnight": 300}[self.mode]
 
     def resolved_deadline_minutes(self) -> int:
         if self.deadline_minutes is not None:
             return self.deadline_minutes
-        return {"quick": 10, "standard": 45, "deep": 180, "overnight": 720}[self.mode]
+        return {"quick": 10, "standard": 45, "deep": 360, "overnight": 1_440}[self.mode]
 
     def resolved_model_calls(self) -> int:
         if self.max_model_calls is not None:
             return self.max_model_calls
         # This is an attempt budget, not a successful-response budget. It includes route fallback.
-        return {"quick": 40, "standard": 120, "deep": 400, "overnight": 1_600}[self.mode]
+        return {"quick": 40, "standard": 120, "deep": 800, "overnight": 4_000}[self.mode]
 
 
 class Plan(BaseModel):

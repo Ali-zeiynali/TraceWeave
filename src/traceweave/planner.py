@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from importlib.resources import files
 
@@ -27,16 +28,68 @@ class Planner:
             "language": spec.language,
             "round": 1,
         }
-        try:
-            data = await self.provider.json(
-                system=_prompt("initial_plan.txt") + "\n\n" + self.skills.for_task("planning"),
-                user=json.dumps(payload, ensure_ascii=False, indent=2),
-                task="planning",
-                run_id=run_id,
+        roles = ["Lead coverage planner"]
+        if spec.mode in {"deep", "overnight"}:
+            roles.extend(
+                [
+                    "Primary documents, registries, dates, and independent verification",
+                    "People, public social activity, comments, documents, and visual evidence",
+                    "Technical infrastructure, code, archives, relationships, and rare leads",
+                ]
             )
-            return self._normalize_plan(Plan.model_validate(data), spec, [])
-        except (LLMError, ValueError):
+
+        async def branch(role: str) -> Plan:
+            branch_payload = {**payload, "independent_branch": role}
+            system = _prompt("initial_plan.txt") + "\n\n" + self.skills.for_task("planning")
+            system += (
+                "\n\nYou are an isolated planning branch. Cover only the assigned branch, "
+                "return distinct high-information queries, and leave synthesis to the lead. "
+                f"Assigned branch: {role}"
+            )
+            deadline = {"quick": 90, "standard": 150, "deep": 240, "overnight": 360}[spec.mode]
+            async with asyncio.timeout(deadline):
+                data = await self.provider.json(
+                    system=system,
+                    user=json.dumps(branch_payload, ensure_ascii=False, indent=2),
+                    task="planning",
+                    run_id=run_id,
+                )
+            return Plan.model_validate(data)
+
+        results = await asyncio.gather(*(branch(role) for role in roles), return_exceptions=True)
+        plans = [result for result in results if isinstance(result, Plan)]
+        if not plans:
             return self._heuristic(spec, round_no=1, completed=[])
+        return self._merge_initial_plans(plans, spec)
+
+    def _merge_initial_plans(self, plans: list[Plan], spec: ResearchSpec) -> Plan:
+        def unique(values: list[str], limit: int) -> list[str]:
+            seen: set[str] = set()
+            merged: list[str] = []
+            for value in values:
+                normalized = " ".join(value.split())
+                key = normalized.casefold()
+                if normalized and key not in seen:
+                    seen.add(key)
+                    merged.append(normalized)
+                if len(merged) >= limit:
+                    break
+            return merged
+
+        lead = plans[0]
+        combined = Plan(
+            objective=lead.objective,
+            focus=unique([value for plan in plans for value in plan.focus], 10),
+            queries=unique([value for plan in plans for value in plan.queries], 14),
+            rationale="Parallel specialist planning branches: "
+            + "; ".join(plan.rationale for plan in plans if plan.rationale)[:1200],
+            gaps=unique([value for plan in plans for value in plan.gaps], 12),
+            source_classes=unique(
+                [value for plan in plans for value in plan.source_classes],
+                12,
+            ),
+        )
+        return self._normalize_plan(combined, spec, [])
 
     async def replan(
         self,
@@ -47,10 +100,12 @@ class Planner:
         sources: list[SourceView],
         claims: list[dict] | None = None,
         research_state: dict | None = None,
+        observation_capsules: list[dict] | None = None,
         run_id: str | None = None,
     ) -> Plan:
         if self.provider is None:
-            return self._heuristic(spec, round_no=round_no, completed=completed_queries)
+            plan = self._heuristic(spec, round_no=round_no, completed=completed_queries)
+            return self._with_observation_leads(plan, spec, observation_capsules)
         capsules = []
         for source in sources[:35]:
             capsules.append(
@@ -87,21 +142,54 @@ class Planner:
             "source_capsules": capsules,
             "grounded_claim_capsules": claim_capsules,
             "research_state": research_state or {},
+            "observation_capsules": observation_capsules or [],
         }
         try:
-            data = await self.provider.json(
-                system=_prompt("replan.txt") + "\n\n" + self.skills.for_task("replanning"),
-                user=json.dumps(payload, ensure_ascii=False, indent=2),
-                task="replanning",
-                run_id=run_id,
-            )
-            return self._normalize_plan(Plan.model_validate(data), spec, completed_queries)
-        except (LLMError, ValueError):
-            return self._heuristic(spec, round_no=round_no, completed=completed_queries)
+            deadline = {"quick": 90, "standard": 150, "deep": 240, "overnight": 360}[spec.mode]
+            async with asyncio.timeout(deadline):
+                data = await self.provider.json(
+                    system=_prompt("replan.txt") + "\n\n" + self.skills.for_task("replanning"),
+                    user=json.dumps(payload, ensure_ascii=False, indent=2),
+                    task="replanning",
+                    run_id=run_id,
+                )
+            plan = self._normalize_plan(Plan.model_validate(data), spec, completed_queries)
+            return self._with_observation_leads(plan, spec, observation_capsules)
+        except (LLMError, TimeoutError, ValueError):
+            plan = self._heuristic(spec, round_no=round_no, completed=completed_queries)
+            return self._with_observation_leads(plan, spec, observation_capsules)
+
+    def _with_observation_leads(
+        self,
+        plan: Plan,
+        spec: ResearchSpec,
+        observations: list[dict] | None,
+    ) -> Plan:
+        """Promote concise visual/OCR observations into traceable discovery queries."""
+        query_limit = 12 if spec.mode in {"deep", "overnight"} else 7
+        lead_queries: list[str] = []
+        seen = {query.casefold() for query in plan.queries}
+        for observation in observations or []:
+            kind = str(observation.get("kind") or "")
+            if not kind.startswith(("ocr:", "vision:")):
+                continue
+            text = " ".join(str(observation.get("text") or "").split())
+            if not 2 <= len(text) <= 180:
+                continue
+            query = f'"{text}" "{spec.topic}"'
+            if query.casefold() in seen:
+                continue
+            lead_queries.append(query)
+            seen.add(query.casefold())
+            if len(lead_queries) >= 4:
+                break
+        queries = lead_queries + list(plan.queries)
+        return plan.model_copy(update={"queries": queries[:query_limit]})
 
     def _normalize_plan(self, plan: Plan, spec: ResearchSpec, completed: list[str]) -> Plan:
         done = {q.casefold() for q in completed}
-        queries = [q for q in plan.queries if q.casefold() not in done][:7]
+        query_limit = 12 if spec.mode in {"deep", "overnight"} else 7
+        queries = [q for q in plan.queries if q.casefold() not in done][:query_limit]
         if not queries:
             queries = self._heuristic(spec, round_no=2, completed=completed).queries
         return plan.model_copy(update={"queries": queries})

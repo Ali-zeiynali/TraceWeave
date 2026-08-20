@@ -9,7 +9,7 @@ from traceweave.providers.base import LLMError, LLMProvider
 
 
 class PromptInterpreter:
-    """Turn one natural-language request into a bounded durable investigation spec."""
+    """Turn one natural-language request into a durable investigation spec."""
 
     def __init__(self, provider: LLMProvider | None):
         self.provider = provider
@@ -27,9 +27,8 @@ class PromptInterpreter:
                         "request": prompt,
                         "defaults": base.model_dump(),
                         "policy": {
-                            "public_data_only": True,
                             "exclude_minors": True,
-                            "no_access_control_bypass": True,
+                            "no_contact_with_people": True,
                         },
                     },
                     ensure_ascii=False,
@@ -67,7 +66,7 @@ class PromptInterpreter:
         elif any(x in low for x in ("عمیق", "جامع", "کامل کامل", "deep", "comprehensive", "exhaustive")):
             mode = "deep"
         else:
-            mode = "standard"
+            mode = "deep"
         if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", text):
             language = "ja"
         elif re.search(r"[\u0600-\u06ff]", text):

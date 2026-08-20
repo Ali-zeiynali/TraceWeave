@@ -11,6 +11,7 @@ Use source capsules, grounded claims, and research_state. Look for:
 - image/video/OCR observations and their exact artifact regions
 - native-language aliases, local registries, local reporting and local social terminology
 - rare high-information breadcrumbs that connect otherwise separate graph branches
+- read observation_capsules directly; turn rare OCR/visible text/metadata into targeted follow-up queries while retaining source_id, artifact_id, locator and uncertainty
 
 Never treat snippets as proof. Do not repeat completed queries unless a materially different source class/filter is needed.
 Return strict JSON with objective, focus, queries, rationale, gaps, source_classes.

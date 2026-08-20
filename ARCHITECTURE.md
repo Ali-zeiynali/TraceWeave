@@ -76,7 +76,10 @@ Large raw/text payloads are stored as compressed files under `.traceweave/` and 
 
 ## 2. Plan → collect → re-plan
 
-A plan is intentionally one round. Re-planning receives bounded source capsules, grounded-claim capsules, and compact research-state counts. It does not receive the entire browsing transcript.
+A plan is intentionally one round. Re-planning receives bounded source capsules, grounded-claim capsules,
+compact research-state counts, and high-value public observation capsules. The observation capsule carries the
+actual OCR/visible text or metadata excerpt plus source/artifact IDs, locator, timestamp, confidence, importance,
+and rarity. Raw observations remain local; known-irrelevant metadata and non-public observations are not sent.
 
 This keeps low-context models usable and makes resume deterministic.
 
@@ -153,11 +156,14 @@ Recursive browsing is best-first and budgeted, not naive depth-first explosion. 
 The TUI has two visual states:
 
 - **Landing:** centered input, folder, planning route/model, random tip.
-- **Workspace:** source table + compact plan/gaps + bounded trace log + command input.
+- **Workspace:** live Markdown report + compact focus/gaps + evidence table + bounded activity trace + moving status/token indicator.
 
-No Footer widget is used. No CSS `margin: auto` is used; centering uses Textual's `CenterMiddle` container.
+The prompt is borderless except for one colored quote line. Typing `/` opens a clickable command palette. No Footer widget
+is used; landing centering uses Textual's `CenterMiddle` and workspace centering uses symmetric layout.
 
 TUI sessions persist separately from research runs, so switching sessions changes operator context without destroying evidence.
+Session metadata retains run IDs and the preferred deployment. The preference is only a routing bias; health/circuit state
+still falls back to another token/model/provider.
 
 ## 8. Security boundaries
 

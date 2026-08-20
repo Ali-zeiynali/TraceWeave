@@ -35,7 +35,9 @@ providers = ["litellm>=1.75,<2"]
 stage4 = ["pypdf>=5,<7"]
 browser = ["crawl4ai>=0.8,<1"]
 social = ["telethon>=1.40,<2"]
-full = ["litellm>=1.75,<2", "crawl4ai>=0.8,<1", "pypdf>=5,<7", "telethon>=1.40,<2"]
+media = ["Pillow>=11,<13", "ImageHash>=4.3,<5"]
+media-advanced = ["opencv-python-headless>=4.10,<5"]
+full = ["litellm>=1.75,<2", "crawl4ai>=0.8,<1", "pypdf>=5,<7", "telethon>=1.40,<2", "Pillow>=11,<13", "ImageHash>=4.3,<5"]
 dev = [
   "build>=1.2,<2",
   "pytest>=8,<10",

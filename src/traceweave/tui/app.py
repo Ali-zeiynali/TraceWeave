@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import shlex
 from contextlib import suppress
 from pathlib import Path
 
+from rich.markdown import Markdown as RichMarkdown
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import CenterMiddle, Horizontal, Vertical
 from textual.suggester import SuggestFromList
-from textual.widgets import DataTable, Input, RichLog, Static
+from textual.widgets import DataTable, Input, OptionList, RichLog, Static
+from textual.widgets.option_list import Option
 
 from traceweave import __version__
 from traceweave.agent import PromptInterpreter
@@ -49,6 +52,8 @@ COMMANDS = [
     "/providers reload",
     "/dashboard",
     "/router",
+    "/model list",
+    "/model auto",
     "/session list",
     "/session new ",
     "/session switch ",
@@ -62,6 +67,7 @@ COMMANDS = [
     "/export mermaid",
     "/export graphml",
     "/export evidence",
+    "/case",
     "/shell status",
     "/shell enable",
     "/shell disable",
@@ -72,12 +78,12 @@ COMMANDS = [
 ]
 
 TIPS = [
-    "[cyan]Tip[/cyan]  Use /angle to change what the research engine considers important.",
+    "[magenta]Tip[/magenta]  Use /angle to change what the research engine considers important.",
     "[magenta]Tip[/magenta]  Deep mode follows citations, archives, papers and high-value links.",
     "[green]Tip[/green]  Every discovery keeps its query, engine and retrieval provenance.",
     "[yellow]Tip[/yellow]  /providers sync refreshes token-scoped model catalogs without storing API keys.",
-    "[blue]Tip[/blue]  /pause is durable; /resume continues the same run after a restart.",
-    "[cyan]Tip[/cyan]  Prefix a command with ! to use the local shell after /shell enable.",
+    "[green]Tip[/green]  /pause is durable; /resume continues the same run after a restart.",
+    "[magenta]Tip[/magenta]  Prefix a command with ! to use the local shell after /shell enable.",
 ]
 
 HELP = """[b]Research[/b]
@@ -90,19 +96,21 @@ HELP = """[b]Research[/b]
 
 [b]Providers[/b]
 /providers  /providers sync  /providers reload  /router  /dashboard
+/model list  /model DEPLOYMENT_KEY  /model auto  (selected models retain health-based fallback)
 Up to five keys/provider are read from .env; Cloudflare supports three account/token pairs.
 /vision on|off  /vision budget N   (also requires TRACEWEAVE_REMOTE_VISION_ENABLED=true)
 
 [b]Sessions & output[/b]
 /session list|new NAME|switch ID|rename NAME
 /export [RUN] [md|json|mermaid|graphml|evidence]
+/case [RUN] refreshes report.md, findings.json, graphs and important media.
 
 [b]Local shell[/b]
 /shell status|enable|disable   !COMMAND
 
 [b]Keys[/b]
 Ctrl+L focus input · Ctrl+R resume · Ctrl+E export · Ctrl+K clear trace · Ctrl+Q quit · F1 help
-Up/Down command history. Right-arrow accepts an autocomplete suggestion.
+Type / to open the clickable command palette. Up/Down browse history; Right accepts autocomplete.
 """
 
 
@@ -110,30 +118,37 @@ class TraceWeaveApp(App):
     TITLE = "TraceWeave"
     SUB_TITLE = f"v{__version__}"
     CSS = """
-    Screen { layout: vertical; background: $surface; }
+    Screen { layout: vertical; background: #0e0d12; color: #e8e2ec; }
 
     #landing { height: 1fr; }
-    #launch-card { width: 76; max-width: 92%; height: auto; }
-    #logo { height: 3; content-align: center middle; text-align: center; text-style: bold; color: $accent; }
-    #launch-input { height: 3; border: round $primary; background: $panel; }
+    #launch-card { width: 78; max-width: 88%; height: auto; }
+    #logo { height: 3; content-align: center middle; text-align: center; text-style: bold; color: #d7a7ff; }
+    #launch-input { height: 3; border: none; border-left: thick #a86cf2; background: #17141d; padding: 0 1; }
+    #launch-input:focus { border-left: thick #e0b7ff; }
     #launch-meta { height: 1; margin-top: 1; content-align: center middle; text-align: center; color: $text-muted; }
     #tip { height: 2; margin-top: 1; content-align: center top; text-align: center; color: $text-muted; }
+    #launch-palette { display: none; height: 14; margin-top: 1; background: #17141d; border-left: thick #a86cf2; }
+    #launch-palette > .option-list--option-highlighted { background: #352442; color: #ffffff; }
 
-    #workspace { display: none; height: 1fr; }
-    #topbar { height: 2; padding: 0 1; background: $panel; content-align: left middle; color: $text-muted; }
-    #workbody { height: 1fr; }
+    #workspace { display: none; height: 1fr; align-horizontal: center; }
+    #workbody { width: 94%; height: 1fr; }
     #provider-dashboard { display: none; height: 1fr; padding: 0 1; }
     #provider-summary { height: 2; color: $text-muted; }
     #provider-usage { height: 1fr; }
-    #primary { width: 70%; padding: 0 1; }
-    #side { width: 30%; padding: 0 1; background: $panel; }
-    .heading { height: 1; text-style: bold; color: $accent; }
-    #sources { height: 1fr; }
-    #plan-wrap { height: 46%; min-height: 8; }
+    #primary { width: 68%; padding: 1 2 0 1; }
+    #side { width: 32%; padding: 1; background: #151219; }
+    .heading { height: 1; text-style: bold; color: #d7a7ff; }
+    #report { height: 1fr; background: #100f14; padding: 1 2; }
+    #activity-indicator { height: 1; color: #9f92a8; text-align: left; }
+    #sources { height: 38%; min-height: 7; }
+    #plan-wrap { height: 30%; min-height: 7; }
     #plan { height: 1fr; overflow-y: auto; color: $text; }
-    #trace-wrap { height: 54%; min-height: 8; padding-top: 1; }
+    #trace-wrap { height: 32%; min-height: 7; padding-top: 1; }
     #log { height: 1fr; }
-    #command { display: none; height: 3; margin: 0 1; border: round $primary; background: $panel; }
+    #command-palette { display: none; height: 12; margin: 0 3; background: #17141d; border-left: thick #a86cf2; }
+    #command-palette > .option-list--option-highlighted { background: #352442; color: #ffffff; }
+    #command { display: none; height: 3; margin: 0 3 1 3; border: none; border-left: thick #a86cf2; background: #17141d; padding: 0 1; }
+    #command:focus { border-left: thick #e0b7ff; }
     """
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", show=False),
@@ -154,8 +169,17 @@ class TraceWeaveApp(App):
         assert session is not None
         self.session_id = str(session["id"])
         self.current_run: str | None = session.get("active_run_id")
+        try:
+            self._session_meta = json.loads(str(session.get("metadata_json") or "{}"))
+        except (TypeError, ValueError):
+            self._session_meta = {}
+        self._session_runs = {str(value) for value in self._session_meta.get("run_ids", []) if value}
+        if self.current_run:
+            self._session_runs.add(self.current_run)
+        if self.runtime.router:
+            self.runtime.router.prefer(self._session_meta.get("preferred_deployment"))
         self.angle = str(session.get("angle") or "")
-        self.mode = str(session.get("mode") or "standard")
+        self.mode = str(session.get("mode") or "deep")
         self.language = str(session.get("language") or "all")
         self.rounds: int | None = None
         self.depth: int | None = None
@@ -168,6 +192,10 @@ class TraceWeaveApp(App):
         self._history_index = 0
         self._landing = True
         self._tip = random.choice(TIPS)
+        self._mode_explicit = False
+        self._working = False
+        self._dot_phase = 0
+        self._palette_commands: dict[str, list[str]] = {}
 
     def compose(self) -> ComposeResult:
         with CenterMiddle(id="landing"), Vertical(id="launch-card"):
@@ -177,18 +205,21 @@ class TraceWeaveApp(App):
                 id="launch-input",
                 suggester=SuggestFromList(COMMANDS, case_sensitive=False),
             )
+            yield OptionList(id="launch-palette", compact=True)
             yield Static("", id="launch-meta")
             yield Static(self._tip, id="tip")
         with Vertical(id="workspace"):
-            yield Static("", id="topbar")
             with Horizontal(id="workbody"):
                 with Vertical(id="primary"):
-                    yield Static("SOURCES", classes="heading")
-                    yield DataTable(id="sources", zebra_stripes=False, cursor_type="none")
+                    yield Static("LIVE REPORT", classes="heading")
+                    yield RichLog(id="report", wrap=True, highlight=False, markup=True)
+                    yield Static("", id="activity-indicator")
                 with Vertical(id="side"):
                     with Vertical(id="plan-wrap"):
                         yield Static("FOCUS", classes="heading")
                         yield Static("", id="plan")
+                    yield Static("EVIDENCE", classes="heading")
+                    yield DataTable(id="sources", zebra_stripes=False, cursor_type="none")
                     with Vertical(id="trace-wrap"):
                         yield Static("ACTIVITY", classes="heading")
                         yield RichLog(id="log", wrap=True, highlight=True, markup=True)
@@ -196,6 +227,7 @@ class TraceWeaveApp(App):
                 yield Static("PROVIDER / MODEL USAGE", classes="heading")
                 yield Static("", id="provider-summary")
                 yield DataTable(id="provider-usage", zebra_stripes=False, cursor_type="none")
+        yield OptionList(id="command-palette", compact=True)
         yield Input(
             placeholder="Ask, /command, or !shell…",
             id="command",
@@ -227,6 +259,7 @@ class TraceWeaveApp(App):
             usage.add_column(label, key=key)
         self._refresh_landing_meta()
         self.query_one("#launch-input", Input).focus()
+        self.set_interval(0.55, self._animate_activity)
         if self.runtime.router:
             self.run_worker(
                 self._sync_catalogs_background(),
@@ -257,6 +290,20 @@ class TraceWeaveApp(App):
             f"[dim]📁 {folder}   ·   model[/dim] [b]{self._route_label()}[/b][dim]{run_hint}[/dim]"
         )
 
+    def _session_tokens(self) -> int:
+        total = 0
+        for run_id in self._session_runs:
+            total += sum(int(row.get("total_tokens") or 0) for row in self.runtime.storage.provider_usage(run_id=run_id))
+        return total
+
+    def _persist_session_meta(self) -> None:
+        self._session_meta["run_ids"] = sorted(self._session_runs)
+        if self.runtime.router:
+            self._session_meta["preferred_deployment"] = self.runtime.router.preferred_deployment
+        self.runtime.storage.update_session(
+            self.session_id, metadata_json=json.dumps(self._session_meta, ensure_ascii=False)
+        )
+
     def _update_status(self) -> None:
         if self._landing:
             self._refresh_landing_meta()
@@ -265,15 +312,25 @@ class TraceWeaveApp(App):
         round_text = f"r{run['current_round']}/{run['max_rounds']}" if run else "idle"
         tasks = self.runtime.storage.task_stats(self.current_run) if self.current_run else {}
         queue = f"done {tasks.get('completed', 0)} · queued {tasks.get('pending', 0) + tasks.get('retry', 0)}"
-        self.query_one("#topbar", Static).update(
-            f"[b]TraceWeave[/b]  ·  {round_text}  ·  {self.mode}  ·  {queue}  ·  run {self.current_run or '—'}"
+        tokens = self._session_tokens()
+        state = "working" if self._working else str((run or {}).get("status") or "ready")
+        dots = ("● · ·", "· ● ·", "· · ●")[self._dot_phase] if self._working else "· · ·"
+        self.query_one("#activity-indicator", Static).update(
+            f"[b #d7a7ff]{dots}[/b #d7a7ff]  {state}  ·  {round_text}  ·  {queue}  ·  session tokens {tokens:,}"
         )
+
+    def _animate_activity(self) -> None:
+        if self._working:
+            self._dot_phase = (self._dot_phase + 1) % 3
+        self._update_status()
 
     def _show_workspace(self) -> None:
         self._landing = False
         self.query_one("#landing").styles.display = "none"
+        self.query_one("#launch-palette").styles.display = "none"
         self.query_one("#workspace").styles.display = "block"
         self.query_one("#command").styles.display = "block"
+        self.query_one("#command-palette").styles.display = "none"
         self.query_one("#command", Input).focus()
         self._update_status()
 
@@ -281,7 +338,9 @@ class TraceWeaveApp(App):
         self._landing = True
         self.query_one("#workspace").styles.display = "none"
         self.query_one("#command").styles.display = "none"
+        self.query_one("#command-palette").styles.display = "none"
         self.query_one("#landing").styles.display = "block"
+        self.query_one("#launch-palette").styles.display = "none"
         self._tip = random.choice(TIPS)
         self.query_one("#tip", Static).update(self._tip)
         self._refresh_landing_meta()
@@ -292,6 +351,12 @@ class TraceWeaveApp(App):
         if not run:
             return
         self._show_workspace()
+        report = self.query_one("#report", RichLog)
+        report.clear()
+        if run.get("final_summary"):
+            report.write(RichMarkdown(str(run["final_summary"])))
+        else:
+            report.write(RichMarkdown(f"# {run['topic']}\n\nResearch state restored; evidence collection can resume."))
         plan = self.runtime.storage.get_plan(run_id, max(1, int(run.get("current_round") or 1)))
         if plan:
             self._render_plan(plan.objective, plan.focus, plan.queries, plan.gaps)
@@ -349,6 +414,12 @@ class TraceWeaveApp(App):
     async def _on_progress(self, event: ProgressEvent) -> None:
         self._show_workspace()
         log = self.query_one("#log", RichLog)
+        report = self.query_one("#report", RichLog)
+        if event.kind in {"run.started", "search.started", "plan.ready"}:
+            self._working = True
+        elif event.kind in {"run.completed", "run.failed", "run.paused"}:
+            self._working = False
+
         important = event.kind in {
             "plan.ready",
             "source.discovered",
@@ -358,6 +429,9 @@ class TraceWeaveApp(App):
             "specialists.discovered",
             "archives.discovered",
             "graph.curated",
+            "media.stored",
+            "local_media.completed",
+            "vision.completed",
             "run.completed",
             "run.failed",
             "search.failed",
@@ -367,6 +441,9 @@ class TraceWeaveApp(App):
         if important:
             log.write(f"[dim]{event.kind}[/dim] {event.message}")
         if event.kind == "plan.ready":
+            report.write(
+                f"[bold #d7a7ff]Next research pass[/bold #d7a7ff]\n{event.data.get('objective', event.message)}"
+            )
             self._render_plan(
                 str(event.data.get("objective", "")),
                 list(event.data.get("focus", [])),
@@ -383,12 +460,31 @@ class TraceWeaveApp(App):
             )
         elif event.kind == "source.triaged":
             sid = int(event.data["source_id"])
+            importance = float(event.data.get("importance", 0))
+            relevance = float(event.data.get("relevance", 0))
             if sid in self._seen_source_ids:
                 table = self.query_one("#sources", DataTable)
                 table.update_cell(str(sid), "importance", _score(float(event.data.get("importance", 0))))
                 table.update_cell(str(sid), "relevance", _score(float(event.data.get("relevance", 0))))
+            if importance >= 75:
+                report.write(
+                    f"[bold #50d6a1]High-value source S{sid}[/bold #50d6a1]  "
+                    f"importance {importance:.0f} · relevance {relevance:.0f}"
+                )
+        elif event.kind == "claim.extracted":
+            report.write(f"[bold #f2ca72]Grounded finding[/bold #f2ca72]\n{event.message}")
+        elif event.kind in {"vision.completed", "local_media.completed", "media.stored"}:
+            report.write(f"[bold #d7a7ff]Visual evidence[/bold #d7a7ff]\n{event.message}")
         elif event.kind == "run.completed":
             self.notify("Research completed", severity="information", timeout=5)
+            run = self.runtime.storage.get_run(self.current_run) if self.current_run else None
+            if run and run.get("final_summary"):
+                report.clear()
+                report.write(RichMarkdown(str(run["final_summary"])))
+        elif event.kind == "run.failed":
+            report.write(
+                f"[bold red]Run failed but checkpoints were retained.[/bold red]\n{event.message}"
+            )
         self._update_status()
 
     @on(Input.Submitted, "#launch-input")
@@ -398,6 +494,51 @@ class TraceWeaveApp(App):
     @on(Input.Submitted, "#command")
     async def command_submitted(self, event: Input.Submitted) -> None:
         await self._dispatch_input(event)
+
+    @on(Input.Changed, "#launch-input")
+    def launch_changed(self, event: Input.Changed) -> None:
+        self._update_palette(event.value, "launch-palette")
+
+    @on(Input.Changed, "#command")
+    def command_changed(self, event: Input.Changed) -> None:
+        self._update_palette(event.value, "command-palette")
+
+    def _update_palette(self, value: str, palette_id: str) -> None:
+        palette = self.query_one(f"#{palette_id}", OptionList)
+        normalized = value.strip().casefold()
+        if not normalized.startswith("/"):
+            palette.styles.display = "none"
+            self._palette_commands[palette_id] = []
+            return
+        matches = [
+            command
+            for command in COMMANDS
+            if normalized == "/" or command.casefold().startswith(normalized)
+        ][:14]
+        self._palette_commands[palette_id] = matches
+        palette.set_options(
+            [Option(command.rstrip(), id=f"command-{index}") for index, command in enumerate(matches)]
+        )
+        palette.styles.display = "block" if matches else "none"
+
+    @on(OptionList.OptionSelected)
+    async def palette_selected(self, event: OptionList.OptionSelected) -> None:
+        palette_id = event.option_list.id or ""
+        commands = self._palette_commands.get(palette_id, [])
+        if not 0 <= event.option_index < len(commands):
+            return
+        command = commands[event.option_index]
+        target_id = "launch-input" if palette_id == "launch-palette" else "command"
+        target = self.query_one(f"#{target_id}", Input)
+        event.option_list.styles.display = "none"
+        if command.endswith(" "):
+            target.value = command
+            target.cursor_position = len(command)
+            target.focus()
+        else:
+            target.value = ""
+            await self._handle_command(command)
+        event.stop()
 
     async def _dispatch_input(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -456,6 +597,7 @@ class TraceWeaveApp(App):
                 self.notify("Mode must be quick, standard, deep or overnight", severity="error")
             else:
                 self.mode = args[0]
+                self._mode_explicit = True
                 self.runtime.storage.update_session(self.session_id, mode=self.mode)
                 self.notify(f"Mode: {self.mode}")
         elif cmd == "/language" and args:
@@ -533,6 +675,27 @@ class TraceWeaveApp(App):
                 log.write(
                     f"[{state}]{'OK' if row['ok'] else 'FAIL'}[/{state}] {row['task']} {row['deployment_key']} {row['failure_kind'] or ''} {row['latency_seconds'] or 0:.2f}s"
                 )
+        elif cmd == "/model":
+            self._show_workspace()
+            if not self.runtime.router:
+                log.write("[yellow]No model routes are configured.[/yellow]")
+            elif not args or args[0].casefold() == "list":
+                for row in self.runtime.router.status_rows("planning"):
+                    marker = "*" if row.get("preferred") else " "
+                    health = "#50d6a1" if row["healthy"] else "#f2ca72"
+                    log.write(
+                        f"{marker} [{health}]{row['deployment_key']}[/{health}]  "
+                        f"{row['model_name']} · ok={row['successes']} fail={row['failures']} "
+                        f"lat={row['latency']}s"
+                    )
+            else:
+                choice = args[0]
+                if self.runtime.router.prefer(choice):
+                    self._persist_session_meta()
+                    self._refresh_landing_meta()
+                    self.notify(f"Model route: {choice if choice != 'auto' else 'automatic'}")
+                else:
+                    self.notify("Unknown deployment key; use /model list", severity="error")
         elif cmd == "/export":
             rid = (
                 args[0]
@@ -549,6 +712,17 @@ class TraceWeaveApp(App):
                 )
             )
             self._export(rid, fmt)
+        elif cmd == "/case":
+            rid = args[0] if args else self.current_run
+            if not rid:
+                log.write("[yellow]No run to package.[/yellow]")
+            else:
+                try:
+                    path = Exporter(self.runtime.storage, self.runtime.settings.data_dir / "cases").case(rid)
+                except (KeyError, OSError, ValueError) as exc:
+                    log.write(f"[red]Case export failed: {exc}[/red]")
+                else:
+                    log.write(f"[green]Case workspace refreshed:[/green] {path}")
         elif cmd == "/session":
             await self._session_command(args)
         elif cmd == "/shell":
@@ -703,10 +877,21 @@ class TraceWeaveApp(App):
             return
         self.session_id = sid
         self.current_run = row.get("active_run_id")
+        try:
+            self._session_meta = json.loads(str(row.get("metadata_json") or "{}"))
+        except (TypeError, ValueError):
+            self._session_meta = {}
+        self._session_runs = {str(value) for value in self._session_meta.get("run_ids", []) if value}
+        if self.current_run:
+            self._session_runs.add(str(self.current_run))
+        if self.runtime.router:
+            self.runtime.router.prefer(self._session_meta.get("preferred_deployment"))
         self.angle = str(row.get("angle") or "")
-        self.mode = str(row.get("mode") or "standard")
+        self.mode = str(row.get("mode") or "deep")
         self.language = str(row.get("language") or "all")
         self.shell_enabled = bool(row.get("shell_enabled"))
+        self._mode_explicit = False
+        self._working = False
         self._show_landing()
 
     async def _shell_command(self, args: list[str]) -> None:
@@ -751,10 +936,14 @@ class TraceWeaveApp(App):
     def _start_research(self, topic: str) -> None:
         self._show_workspace()
         inferred = PromptInterpreter.heuristic(topic)
+        self._working = True
+        report = self.query_one("#report", RichLog)
+        report.clear()
+        report.write(RichMarkdown(f"# {topic}\n\nInterpreting the request and mapping the first research pass…"))
         defaults = ResearchSpec(
             topic=topic,
             angle=self.angle or inferred.angle,
-            mode=self.mode if self.mode != "standard" else inferred.mode,
+            mode=self.mode if self._mode_explicit else inferred.mode,
             max_rounds=self.rounds,
             language=self.language if self.language != "all" else inferred.language,
             max_depth=self.depth,
@@ -774,6 +963,8 @@ class TraceWeaveApp(App):
                 run_id, "run.created", f"Created research run {run_id}", {"topic": spec.topic}
             )
             self.current_run = run_id
+            self._session_runs.add(run_id)
+            self._persist_session_meta()
             self.mode = spec.mode
             self.language = spec.language
             self.angle = spec.angle
@@ -797,6 +988,7 @@ class TraceWeaveApp(App):
         self._show_workspace()
         log = self.query_one("#log", RichLog)
         cancelled = self.workers.cancel_group(self, "research")
+        self._working = False
         log.write(
             "[yellow]Pause requested; use /resume to continue.[/yellow]"
             if cancelled
@@ -809,6 +1001,9 @@ class TraceWeaveApp(App):
             self.notify("No run to resume", severity="warning")
             return
         self.current_run = run_id
+        self._session_runs.add(run_id)
+        self._persist_session_meta()
+        self._working = True
         self.runtime.storage.update_session(self.session_id, active_run_id=run_id)
         self._load_run_ui(run_id)
 

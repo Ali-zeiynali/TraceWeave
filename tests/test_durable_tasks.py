@@ -60,7 +60,8 @@ def test_task_retry_and_content_addressed_artifacts(tmp_path: Path) -> None:
 
 def test_overnight_defaults_are_bounded() -> None:
     spec = ResearchSpec(topic="Overnight research", mode="overnight")
-    assert spec.resolved_rounds() == 8
-    assert spec.resolved_depth() == 4
-    assert spec.resolved_frontier_pages() == 120
-    assert spec.resolved_deadline_minutes() == 720
+    assert spec.resolved_rounds() == 10
+    assert spec.resolved_depth() == 5
+    assert spec.resolved_frontier_pages() == 300
+    assert spec.resolved_deadline_minutes() == 1_440
+    assert spec.resolved_model_calls() == 4_000

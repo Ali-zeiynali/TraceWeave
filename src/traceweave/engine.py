@@ -11,6 +11,7 @@ from math import ceil
 from traceweave.agent import PromptInterpreter
 from traceweave.analysis import EvidenceAnalyzer
 from traceweave.config import Settings
+from traceweave.exporter import Exporter
 from traceweave.fetcher import (
     BrowserFetcher,
     CloudflareBrowserFetcher,
@@ -20,6 +21,7 @@ from traceweave.fetcher import (
 )
 from traceweave.frontier import FrontierManager
 from traceweave.graph import GraphCurator
+from traceweave.media import analyze_media_locally
 from traceweave.models import ProgressEvent, ResearchSpec, SourceView
 from traceweave.planner import Planner
 from traceweave.providers.base import LLMError, LLMProvider
@@ -83,6 +85,18 @@ class ResearchEngine:
 
     async def _emit(self, run_id: str | None, kind: str, message: str, **data) -> None:
         self.storage.event(run_id, kind, message, data)
+        if run_id and kind in {
+            "plan.ready",
+            "round.completed",
+            "vision.completed",
+            "run.completed",
+            "run.failed",
+            "run.paused",
+        }:
+            try:
+                Exporter(self.storage, self.settings.data_dir / "cases").case(run_id)
+            except (OSError, KeyError, ValueError) as exc:
+                self.storage.event(run_id, "case.refresh_failed", f"Case workspace refresh failed: {exc}")
         if self.callback:
             try:
                 result = self.callback(ProgressEvent(kind=kind, message=message, data=data))
@@ -218,6 +232,7 @@ class ResearchEngine:
                     sources=self.storage.sources_for_run(run_id, limit=60),
                     claims=self.storage.claims_for_run(run_id, 80),
                     research_state=self._research_state(run_id),
+                    observation_capsules=self._agent_observation_capsules(run_id),
                     run_id=run_id,
                 )
             self.storage.save_plan(run_id, round_no, plan)
@@ -233,16 +248,24 @@ class ResearchEngine:
             source_classes=plan.source_classes,
         )
 
-        for query in self.storage.pending_queries(run_id, round_no):
-            if self._deadline_reached(run_id):
-                await self._emit(
-                    run_id,
-                    "round.deadline_reached",
-                    f"Deadline reached during round {round_no}; remaining work stays resumable",
-                    round=round_no,
-                )
-                return
-            await self._search_query(run_id, spec, round_no, query)
+        pending_queries = self.storage.pending_queries(run_id, round_no)
+        if self._deadline_reached(run_id):
+            await self._emit(
+                run_id,
+                "round.deadline_reached",
+                f"Deadline reached during round {round_no}; remaining work stays resumable",
+                round=round_no,
+            )
+            return
+        branch_sem = asyncio.Semaphore(self.settings.research_query_concurrency)
+
+        async def search_branch(query: str) -> None:
+            async with branch_sem:
+                await self._search_query(run_id, spec, round_no, query)
+
+        await asyncio.gather(
+            *(search_branch(query) for query in pending_queries)
+        )
 
         # Stage 4: specialist sources are independent from generic search and may fail without killing the run.
         specialist = await self.specialists.discover(run_id, spec, plan, round_no)
@@ -298,18 +321,116 @@ class ResearchEngine:
                 round=round_no,
             )
 
+        coverage = self._research_state(run_id)
+        await self._emit(
+            run_id,
+            "coverage.audit",
+            f"Coverage audit: domains={coverage['distinct_domains']} gaps={len(coverage['coverage_gaps'])}",
+            state=coverage,
+            round=round_no,
+        )
+
     def _research_state(self, run_id: str) -> dict[str, object]:
+        sources = self.storage.sources_for_run(run_id, 5000)
+        observations = self.storage.observations_for_run(run_id, 5000)
+        queries = self.storage.completed_queries(run_id)
+        if not queries:
+            queries = list(dict.fromkeys(source.search_query for source in sources if source.search_query))
+        claims = self.storage.claims_for_run(run_id, 5000)
+        media_leads = self.storage.media_leads_for_run(run_id, 5000)
+        source_categories: dict[str, int] = {}
+        for source in sources:
+            key = source.category or "unknown"
+            source_categories[key] = source_categories.get(key, 0) + 1
+        observation_kinds: dict[str, int] = {}
+        for observation in observations:
+            key = str(observation.get("kind") or "unknown")
+            observation_kinds[key] = observation_kinds.get(key, 0) + 1
+        gaps: list[str] = []
+        domains = {source.domain for source in sources if source.domain}
+        if sources and len(domains) < 3:
+            gaps.append("fewer than three independent source domains")
+        if not claims:
+            gaps.append("no literal-grounded claims passed extraction")
+        if media_leads and not observations:
+            gaps.append("media was discovered but has no OCR/metadata/vision observations")
+        entities = self.storage.entities_for_run(run_id, 5000)
+        relationships = self.storage.relationships_for_run(run_id, 5000)
+        if entities and not relationships:
+            gaps.append("entities exist but no relationships have been grounded")
+
         return {
             "archive_captures": len(self.storage.archive_captures_for_run(run_id, 5000)),
             "citations": len(self.storage.citations_for_run(run_id, 5000)),
-            "entities": len(self.storage.entities_for_run(run_id, 5000)),
-            "relationships": len(self.storage.relationships_for_run(run_id, 5000)),
+            "entities": len(entities),
+            "relationships": len(relationships),
             "timeline_events": len(self.storage.timeline_for_run(run_id, 5000)),
             "frontier": self.storage.frontier_stats(run_id),
-            "media_leads": len(self.storage.media_leads_for_run(run_id, 5000)),
+            "media_leads": len(media_leads),
             "artifacts": len(self.storage.artifacts_for_run(run_id, 5000)),
-            "observations": len(self.storage.observations_for_run(run_id, 5000)),
+            "observations": len(observations),
+            "source_categories": source_categories,
+            "observation_kinds": observation_kinds,
+            "distinct_domains": len(domains),
+            "completed_queries": len(queries),
+            "has_english_bridge_query": any(any("a" <= c.casefold() <= "z" for c in q) for q in queries),
+            "has_non_latin_query": any(any(ord(c) > 127 for c in q) for q in queries),
+            "verified_claims": sum(bool(claim.get("verified_span")) for claim in claims),
+            "unfetched_sources": sum(not source.fetched for source in sources),
+            "coverage_gaps": gaps,
         }
+
+    def _reportable_observations(self, run_id: str, limit: int = 80) -> list[dict]:
+        """Keep raw observations stored while excluding known-irrelevant metadata from reports."""
+        sources = {source.id: source for source in self.storage.sources_for_run(run_id, 5000)}
+        reportable: list[dict] = []
+        for observation in self.storage.observations_for_run(run_id, limit):
+            if str(observation.get("sensitivity") or "public") != "public":
+                continue
+            kind = str(observation.get("kind") or "unknown")
+            source = sources.get(observation.get("source_id"))
+            metadata_kind = kind in {"page_metadata", "metadata"} or kind.startswith("metadata:")
+            if (
+                metadata_kind
+                and source is not None
+                and source.relevance == 0
+                and source.importance == 0
+            ):
+                continue
+            reportable.append(observation)
+        return reportable
+
+
+    def _agent_observation_capsules(self, run_id: str) -> list[dict[str, object]]:
+        capsules: list[dict[str, object]] = []
+        for observation in self._reportable_observations(run_id, 80):
+            importance = float(observation.get("importance") or 0)
+            kind = str(observation.get("kind") or "unknown")
+            if importance < 15 and not kind.startswith(("ocr:", "vision:", "metadata:")):
+                continue
+            locator = observation.get("locator_json") or {}
+            if isinstance(locator, str):
+                try:
+                    locator = json.loads(locator)
+                except json.JSONDecodeError:
+                    locator = {"raw": locator[:500]}
+            capsules.append(
+                {
+                    "id": observation["id"],
+                    "source_id": observation.get("source_id"),
+                    "artifact_id": observation.get("artifact_id"),
+                    "kind": kind,
+                    "text": " ".join(str(observation.get("value_text") or "").split())[:1200],
+                    "locator": locator,
+                    "observed_at": observation.get("created_at"),
+                    "confidence": observation.get("confidence"),
+                    "importance": importance,
+                    "rarity": observation.get("rarity"),
+                }
+            )
+            if len(capsules) >= 40:
+                break
+        return capsules
 
     async def _search_query(self, run_id: str, spec: ResearchSpec, round_no: int, query: str) -> None:
         await self._emit(run_id, "search.started", f"Searching: {query}", query=query, round=round_no)
@@ -611,6 +732,35 @@ class ResearchEngine:
         alt_text: str,
     ) -> None:
         run = self.storage.get_run(run_id) or {}
+        if not self.storage.artifact_has_local_media_observations(artifact_id):
+            local_observations = await analyze_media_locally(
+                image,
+                media_type=media_type,
+                language=str(run.get("language") or "all"),
+            )
+            for item in local_observations:
+                self.storage.add_observation(
+                    run_id,
+                    kind=str(item["kind"]),
+                    value_text=str(item["text"]),
+                    source_id=source_id,
+                    snapshot_id=snapshot_id,
+                    artifact_id=artifact_id,
+                    locator=dict(item.get("locator") or {}),
+                    confidence=float(item.get("confidence") or 0.5),
+                    importance=float(item.get("importance") or 0),
+                    rarity=float(item.get("rarity") or 0),
+                )
+            if local_observations:
+                await self._emit(
+                    run_id,
+                    "local_media.completed",
+                    f"Stored {len(local_observations)} deterministic media observations for {artifact_id}",
+                    artifact_id=artifact_id,
+                    source_id=source_id,
+                    observations=len(local_observations),
+                    kinds=[str(item["kind"]) for item in local_observations],
+                )
         if (
             self.provider is None
             or not self.settings.remote_vision_enabled
@@ -792,49 +942,62 @@ class ResearchEngine:
         mode_claim_cap = {"quick": 3, "standard": 6, "deep": 12, "overnight": 20}[spec.mode]
         claims_budget = min(self.settings.claims_max_sources_per_round, mode_claim_cap)
         claims_used = 0
-        for source in pending:
-            full_text = self.storage.snapshot_text(source.id)
-            source_for_model = source.model_copy(
-                update={"text_excerpt": full_text[:16000] if full_text else source.text_excerpt}
-            )
-            snapshot = self.storage.latest_snapshot(source.id)
-            duplicate_of = None
-            family_key = f"domain:{source.domain}"
-            if snapshot and snapshot.get("simhash"):
-                duplicate_of = self.storage.find_near_duplicate(
-                    run_id, source.id, str(snapshot["simhash"]), max_distance=3
+        claims_lock = asyncio.Lock()
+        analysis_sem = asyncio.Semaphore(self.settings.research_query_concurrency)
+
+        async def analyze_source(source: SourceView) -> None:
+            nonlocal claims_used
+            async with analysis_sem:
+                full_text = self.storage.snapshot_text(source.id)
+                source_for_model = source.model_copy(
+                    update={"text_excerpt": full_text[:16000] if full_text else source.text_excerpt}
                 )
-                family_key = (
-                    f"source:{duplicate_of}" if duplicate_of else f"sim:{str(snapshot['simhash'])[:12]}"
+                snapshot = self.storage.latest_snapshot(source.id)
+                duplicate_of = None
+                family_key = f"domain:{source.domain}"
+                if snapshot and snapshot.get("simhash"):
+                    duplicate_of = self.storage.find_near_duplicate(
+                        run_id, source.id, str(snapshot["simhash"]), max_distance=3
+                    )
+                    family_key = (
+                        f"source:{duplicate_of}"
+                        if duplicate_of
+                        else f"sim:{str(snapshot['simhash'])[:12]}"
+                    )
+                result = await self.analyzer.triage(run_id, spec, source_for_model, sources)
+                if duplicate_of:
+                    result = result.model_copy(update={"novelty": min(result.novelty, 12.0)})
+                self.storage.save_analysis(
+                    run_id, source.id, result, family_key=family_key, duplicate_of=duplicate_of
                 )
-            result = await self.analyzer.triage(run_id, spec, source_for_model, sources)
-            if duplicate_of:
-                result = result.model_copy(update={"novelty": min(result.novelty, 12.0)})
-            self.storage.save_analysis(
-                run_id, source.id, result, family_key=family_key, duplicate_of=duplicate_of
-            )
-            await self._emit(
-                run_id,
-                "source.triaged",
-                f"S{source.id} R{result.relevance:.0f} I{result.importance:.0f} N{result.novelty:.0f}",
-                source_id=source.id,
-                relevance=result.relevance,
-                importance=result.importance,
-                novelty=result.novelty,
-                authority=result.authority,
-                duplicate_of=duplicate_of,
-                leads=result.leads,
-                round=round_no,
-            )
-            if (
-                self.settings.claims_enabled
-                and self.provider is not None
-                and full_text
-                and not duplicate_of
-                and result.relevance >= self.settings.claim_min_relevance
-                and claims_used < claims_budget
-            ):
-                claims_used += 1
+                await self._emit(
+                    run_id,
+                    "source.triaged",
+                    f"S{source.id} R{result.relevance:.0f} I{result.importance:.0f} N{result.novelty:.0f}",
+                    source_id=source.id,
+                    relevance=result.relevance,
+                    importance=result.importance,
+                    novelty=result.novelty,
+                    authority=result.authority,
+                    duplicate_of=duplicate_of,
+                    leads=result.leads,
+                    round=round_no,
+                )
+                eligible = (
+                    self.settings.claims_enabled
+                    and self.provider is not None
+                    and bool(full_text)
+                    and not duplicate_of
+                    and result.relevance >= self.settings.claim_min_relevance
+                )
+                extract = False
+                if eligible:
+                    async with claims_lock:
+                        if claims_used < claims_budget:
+                            claims_used += 1
+                            extract = True
+                if not extract:
+                    return
                 claims = await self.analyzer.extract_claims(run_id, spec, source_for_model)
                 for claim in claims:
                     start = full_text.find(claim.evidence_quote)
@@ -863,6 +1026,8 @@ class ResearchEngine:
                         claim_id=claim_id,
                         source_id=source.id,
                     )
+
+        await asyncio.gather(*(analyze_source(source) for source in pending))
 
     @staticmethod
     def _prioritize_sources(spec: ResearchSpec, sources: list[SourceView]) -> list[SourceView]:
@@ -908,13 +1073,16 @@ class ResearchEngine:
         if not sources:
             return "No sources were discovered. Check the search backend and retry."
         if self.provider is None:
-            return self._fallback_summary(
+            summary = self._fallback_summary(
                 sources,
                 claims,
                 reason="No LLM provider was configured; this is a deterministic evidence brief.",
             )
+            return summary + self._local_evidence_appendix(run_id)
         payload = {
             "research": {"topic": spec.topic, "angle": spec.angle, "mode": spec.mode},
+            "coverage": self._research_state(run_id),
+            "observation_capsules": self._agent_observation_capsules(run_id),
             "sources": [
                 {
                     "id": s.id,
@@ -977,16 +1145,43 @@ class ResearchEngine:
         system = files("traceweave.prompts").joinpath("synthesis.txt").read_text(encoding="utf-8")
         system += "\n\n" + self.skills.for_task("synthesis")
         try:
-            return await self.provider.text(
+            summary = await self.provider.text(
                 system=system, user=json.dumps(payload, ensure_ascii=False), task="synthesis", run_id=run_id
             )
+            return summary + self._local_evidence_appendix(run_id)
         except LLMError as exc:
             await self._emit(run_id, "synthesis.failed", f"LLM synthesis unavailable: {exc}")
-            return self._fallback_summary(
+            summary = self._fallback_summary(
                 sources,
                 claims,
                 reason=f"Generative synthesis was unavailable ({exc}); evidence state remains saved.",
             )
+            return summary + self._local_evidence_appendix(run_id)
+
+    def _local_evidence_appendix(self, run_id: str) -> str:
+        observations = self._reportable_observations(run_id, 80)
+        edges = self.storage.research_edges_for_run(run_id, 250)
+        if not observations and not edges:
+            return ""
+        lines = ["", "", "## Locally retained evidence"]
+        if observations:
+            lines.append("### Visual, OCR and metadata observations")
+            for observation in observations[:12]:
+                source = f"S{observation['source_id']}" if observation.get("source_id") else "S?"
+                artifact = str(observation.get("artifact_id") or "no-artifact")
+                text = " ".join(str(observation.get("value_text") or "").split())[:240]
+                lines.append(
+                    f"- [{source}] {observation['kind']} ({artifact}): {text}"
+                )
+        if edges:
+            lines.extend(("", "### Discovery/provenance paths", f"Stored graph edges: {len(edges)}."))
+            lines.append("Full observations and paths remain in findings.json and graph exports.")
+            for edge in edges[:16]:
+                lines.append(
+                    f"- {edge['from_type']}:{edge['from_id']} → {edge['relation']} → "
+                    f"{edge['to_type']}:{edge['to_id']}"
+                )
+        return "\n".join(lines)
 
     @staticmethod
     def _fallback_summary(sources: list[SourceView], claims: list[dict], *, reason: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 from dataclasses import asdict, dataclass
@@ -17,10 +18,13 @@ class ToolSpec:
     cost: str = "free"
     env_vars: tuple[str, ...] = ()
     executable: str = ""
+    python_module: str = ""
     passive: bool = True
     notes: str = ""
 
     def status(self) -> str:
+        if self.python_module:
+            return "ready" if importlib.util.find_spec(self.python_module) else "missing"
         if self.executable:
             return "ready" if shutil.which(self.executable) else "missing"
         if self.env_vars:
@@ -135,6 +139,22 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         notes="Public profile discovery with false-positive validation.",
     ),
     ToolSpec(
+        "spiderfoot-passive",
+        "multi-source",
+        "conditional",
+        "local CLI",
+        executable="spiderfoot",
+        notes="Passive modules and existing public records only; no active target scans.",
+    ),
+    ToolSpec(
+        "theharvester",
+        "multi-source",
+        "conditional",
+        "local CLI",
+        executable="theHarvester",
+        notes="Passive search-engine and public API sources only.",
+    ),
+    ToolSpec(
         "amass-passive",
         "network",
         "conditional",
@@ -159,6 +179,30 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         notes="RDAP is preferred.",
     ),
     ToolSpec("dig", "network", "conditional", "local CLI", executable="dig"),
+    ToolSpec(
+        "tesseract",
+        "media",
+        "stable",
+        "local deterministic CLI",
+        executable="tesseract",
+        notes="Multilingual OCR before optional model vision.",
+    ),
+    ToolSpec(
+        "imagehash",
+        "media",
+        "stable",
+        "local Python library",
+        python_module="imagehash",
+        notes="Perceptual fingerprints for deduplication and cross-source comparison.",
+    ),
+    ToolSpec(
+        "opencv",
+        "media",
+        "conditional",
+        "local Python library",
+        python_module="cv2",
+        notes="Optional deterministic image segmentation and quality analysis.",
+    ),
     ToolSpec(
         "exiftool",
         "media",

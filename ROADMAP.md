@@ -27,6 +27,11 @@ Claim-grounded entities/relationships, timeline, research edges, credential-scop
 - prompt-first multilingual intent parsing, no-key GDELT/MediaWiki/Hacker News fallbacks and cached public-result fallback
 - project skill hot-loading plus web-content firewall and verification skills
 - simplified borderless workspace pane, incremental score updates, JSON/Mermaid/GraphML exports
+- live-report TUI, quote-line prompt, clickable slash palette, model preference switcher and session token/activity display
+- self-contained case workspaces with report/findings/evidence/graph files plus important-media folder
+- four-way parallel specialist planning for Deep/Overnight and bounded concurrent query branches
+- source/language/media/graph coverage audit persisted after every round
+- local ExifTool/Tesseract/ImageHash/OpenCV media observations and company/person/media/infrastructure/multilingual/orchestration skills
 
 ## v0.6 — Source Intelligence
 - source-family / syndication clustering
@@ -42,7 +47,7 @@ Claim-grounded entities/relationships, timeline, research edges, credential-scop
 - compact branch notebooks
 - evidence-aware context builder
 - skill registry metadata / progressive loading improvements (project hot-loading is delivered; version/signature policy remains)
-- coverage matrix and gap prioritization
+- branch notebooks and convergence scoring built on the delivered coverage audit
 - branch saturation/convergence scoring
 
 ## v0.8 — Public OSINT Specialists

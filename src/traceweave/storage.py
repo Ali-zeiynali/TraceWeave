@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from traceweave.models import Plan, ResearchSpec, SearchResult, SourceView, TriageResult, utc_now
-from traceweave.utils import canonicalize_url, lexical_overlap, metadata_published_at
+from traceweave.utils import canonicalize_url, lexical_overlap, metadata_published_at, words
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -1756,7 +1756,15 @@ class Storage:
     def artifact_has_vision_observations(self, artifact_id: str) -> bool:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM observations WHERE artifact_id=? AND kind!='media_asset' LIMIT 1",
+                "SELECT 1 FROM observations WHERE artifact_id=? AND kind LIKE 'vision:%' LIMIT 1",
+                (artifact_id,),
+            ).fetchone()
+        return row is not None
+
+    def artifact_has_local_media_observations(self, artifact_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM observations WHERE artifact_id=? AND (kind LIKE 'ocr:%' OR kind LIKE 'metadata:%' OR kind IN ('media:phash','media:image_metrics')) LIMIT 1",
                 (artifact_id,),
             ).fetchone()
         return row is not None
@@ -2175,10 +2183,17 @@ class Storage:
                    GROUP BY s.id ORDER BY discovered_at DESC LIMIT 1500"""
             ).fetchall()
         scored: list[tuple[float, sqlite3.Row]] = []
+        query_terms = words(query)
         for row in rows:
             haystack = f"{row['title']} {row['url']} {row['snippet']}"
             score = lexical_overlap(query, haystack)
-            if score >= 0.14:
+            shared_meaningful = {
+                term
+                for term in query_terms & words(haystack)
+                if not term.isdigit()
+                and term not in {"or", "and", "not", "site", "filetype"}
+            }
+            if score >= 0.20 and shared_meaningful:
                 scored.append((score, row))
         scored.sort(key=lambda item: (-item[0], str(item[1]["url"])))
         results: list[SearchResult] = []

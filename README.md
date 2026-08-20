@@ -14,13 +14,14 @@ It is deliberately **not** a single giant agent prompt. Crawling, provenance, pe
 - Dynamic routing health at credential, deployment (`token+model`), and task (`token+model+task`) levels.
 - Dynamic cooldown from `Retry-After` / rate-limit headers plus exponential fallback TTLs.
 - Built-in provider presets activated by `.env`; up to five tokens/provider without writing TOML.
-- Minimal OpenCode-style TUI landing screen: centered input, folder, selected planning route, rotating tip. Workspace appears only after research starts or is resumed.
+- Centered TUI with a live model-written report, evidence/focus side pane, moving activity indicator, session-token total, slash-command palette and reduced-border quote input.
 - Durable sessions, pause/resume, full source provenance, archives/citations/graph exports.
 - Quick/Standard/Deep/Overnight modes with persistent deadlines, model budgets, leased round tasks and crash recovery.
+- Deep/Overnight starts with four isolated planning branches and runs distinct search branches concurrently before gap-driven replanning.
 - Passive registry discovery (GLEIF, ROR, ORCID, RDAP, DNS-over-HTTPS, RIPEstat) and public Bluesky/optional official Telegram search.
 - Prompt-first `traceweave ask "..."`, multilingual intent parsing, refusal/evasion fallback, per-task timeouts, and a provider-usage dashboard.
 - No-key GDELT, MediaWiki and Hacker News discovery; official Instagram professional-account hashtag discovery when configured.
-- Content-addressed public images, region-level observations, separately budgeted opt-in remote vision, and GraphML export.
+- Content-addressed public images, ExifTool metadata, multilingual Tesseract OCR, ImageHash fingerprints, optional OpenCV metrics, region-level remote vision, and GraphML export.
 
 ## Safety / scope
 
@@ -65,6 +66,14 @@ For optional provider adapters via LiteLLM:
 ```bash
 pip install -e '.[stage4,providers]'
 ```
+
+For deterministic media analysis:
+
+    pip install -e '.[media]'
+
+Optional, larger VPS dependency:
+
+    pip install -e '.[media-advanced]'
 
 For optional JS/browser fallback:
 
@@ -148,6 +157,9 @@ Type a topic directly or use commands:
 /depth 3
 /budget 30
 /providers sync
+/model list
+/model PROVIDER:CREDENTIAL:MODEL
+/model auto
 /pause
 /resume
 /archives
@@ -157,6 +169,7 @@ Type a topic directly or use commands:
 /export mermaid
 /export graphml
 ```
+/case
 
 Use `F1` for in-app help. Command suggestions use Textual's input suggester; Right Arrow accepts a suggestion. Up/Down traverses local command history. Submitted commands are cleared automatically.
 
@@ -195,7 +208,7 @@ A historical capture is stored as time-scoped evidence and does not overwrite th
 
 Default `.traceweave/` contains SQLite state, compressed source snapshots, archive captures, exports, catalog metadata, and durable sessions. It is intentionally ignored by Git.
 
-Overnight runs default to a 12-hour deadline, eight research rounds, depth four and a 120-page frontier. Override with
+Overnight runs default to a 24-hour deadline, ten research rounds, depth five and a 300-page frontier. Deep is the normal prompt-first default; explicit short/quick wording selects the bounded quick mode. Override with
 `--deadline-minutes`, `--rounds`, `--depth`, `--frontier-budget`, and `--max-model-calls`. State is checkpointed in SQLite;
 expired task/frontier leases are recovered on resume.
 

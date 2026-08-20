@@ -65,7 +65,7 @@ def test_task_specific_model_timeouts_are_bounded(tmp_path: Path) -> None:
     assert router._task_timeout("planning") == 45
     assert router._task_timeout("synthesis") == 75
     assert router._task_attempts("triage") == 3
-    assert router._task_attempts("planning") == router.settings.router_max_attempts
+    assert router._task_attempts("planning") == min(4, router.settings.router_max_attempts)
 
 
 def test_provider_usage_aggregates_tokens_and_failures(tmp_path: Path) -> None:

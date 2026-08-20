@@ -6,6 +6,7 @@ deterministic evidence/coverage scorecard. It never reads or writes API key valu
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 
 DEFAULT_PROMPTS = (
     "Give me a brief, cited report on Cloudflare Workers AI changes announced in 2026.",
@@ -22,11 +24,14 @@ DEFAULT_PROMPTS = (
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("prompts", nargs="*", help="Prompt(s) passed to traceweave ask")
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = root / ".traceweave" / "benchmarks" / stamp
     out.mkdir(parents=True, exist_ok=True)
-    prompts = tuple(sys.argv[1:]) or DEFAULT_PROMPTS
+    prompts = tuple(args.prompts) or DEFAULT_PROMPTS
     manifest: dict[str, object] = {
         "created_at": datetime.now(UTC).isoformat(),
         "runner": "traceweave ask (public CLI)",
@@ -36,6 +41,8 @@ def main() -> int:
     env = dict(os.environ)
     env.update({"PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1", "TRACEWEAVE_ZERO_COST_ONLY": "true"})
     for index, prompt in enumerate(prompts, 1):
+        print(f"[{index}/{len(prompts)}] starting prompt ({len(prompt)} chars)", flush=True)
+        started = monotonic()
         case_dir = out / f"case-{index:02d}"
         case_dir.mkdir()
         result = subprocess.run(
@@ -49,6 +56,7 @@ def main() -> int:
             timeout=60 * 20,
             check=False,
         )
+        duration_seconds = round(monotonic() - started, 3)
         (case_dir / "stdout.txt").write_text(result.stdout, encoding="utf-8")
         (case_dir / "stderr.txt").write_text(result.stderr, encoding="utf-8")
         matches = re.findall(r"\b[0-9a-f]{12}\b", result.stdout)
@@ -58,6 +66,7 @@ def main() -> int:
             "exit_code": result.returncode,
             "run_id": run_id,
             "completed": bool(run_id and result.returncode == 0),
+            "duration_seconds": duration_seconds,
         }
         export_path = root / ".traceweave" / "exports" / f"{run_id}.json"
         if run_id:
@@ -76,10 +85,15 @@ def main() -> int:
             sources = payload.get("sources", [])
             claims = payload.get("claims", [])
             citations = payload.get("citations", [])
+            queries = payload.get("queries", [])
+            observations = payload.get("observations", [])
+            edges = payload.get("research_edges", [])
+            provider_usage = payload.get("provider_usage", [])
             domains = {item.get("domain") for item in sources if item.get("domain")}
             categories = {item.get("category") for item in sources if item.get("category")}
             verified = sum(bool(item.get("verified_span")) for item in claims)
             summary = str((payload.get("run") or {}).get("final_summary") or "")
+            report_citations = len(set(re.findall(r"\[S(\d+)\]", summary)))
             summary_low = summary.casefold()
             synthesis_success = bool(summary) and not any(
                 marker in summary_low
@@ -90,6 +104,7 @@ def main() -> int:
                     marker in str(item.get("domain") or "").casefold()
                     for marker in ("cloudflare.com", "github.com", "ietf.org", "gov", "edu")
                 )
+                or float(item.get("authority") or 0) >= 80
                 for item in sources
             )
             quality_score = min(
@@ -97,7 +112,7 @@ def main() -> int:
                 min(24, len(domains) * 3)
                 + min(15, len(categories) * 3)
                 + min(30, verified * 2)
-                + min(10, len(citations) * 2)
+                + min(10, report_citations * 2)
                 + min(11, official_sources)
                 + (5 if len(summary) >= 500 else 0)
                 + (5 if synthesis_success else 0),
@@ -109,13 +124,22 @@ def main() -> int:
                     "source_categories": len(categories),
                     "claims": len(claims),
                     "verified_claims": verified,
-                    "citations": len(citations),
+                    "citation_leads": len(citations),
+                    "report_citations": report_citations,
+                    "queries": len(queries),
+                    "latin_queries": sum(any("a" <= c.casefold() <= "z" for c in str(q.get("query") or "")) for q in queries),
+                    "non_latin_queries": sum(any(ord(c) > 127 for c in str(q.get("query") or "")) for q in queries),
+                    "observations": len(observations),
+                    "research_edges": len(edges),
+                    "provider_requests": sum(int(row.get("requests") or 0) for row in provider_usage),
+                    "provider_failures": sum(int(row.get("failures") or 0) for row in provider_usage),
                     "official_sources": official_sources,
                     "summary_chars": len(summary),
                     "synthesis_success": synthesis_success,
                     "quality_score": quality_score,
                 }
             )
+        print(f"[{index}/{len(prompts)}] completed in {duration_seconds:.1f}s: {run_id or 'no run id'}", flush=True)
         (case_dir / "score.json").write_text(
             json.dumps(score, ensure_ascii=False, indent=2), encoding="utf-8"
         )

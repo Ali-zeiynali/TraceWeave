@@ -60,10 +60,11 @@ sunset. GitHub Models is also not a provider target because the service was reti
 
 ## Local deterministic tools
 
-`traceweave toolbox` detects Sherlock, Maigret, Amass, Subfinder, WHOIS, dig, ExifTool and ffprobe. These are capability
-declarations; the autonomous runtime does not have a raw-shell tool. Future typed runners must validate every argument,
-apply time/output limits, and restrict Amass/Subfinder to passive modes. ExifTool/ffprobe are allowed because they are
-deterministic metadata parsers, not local ML.
+`traceweave toolbox` detects Sherlock, Maigret, SpiderFoot, theHarvester, Amass, Subfinder, WHOIS, dig, Tesseract,
+ImageHash, optional OpenCV, ExifTool and ffprobe. CLI entries remain capability declarations unless a typed adapter is
+implemented; fetched content cannot invoke raw shell. SpiderFoot/theHarvester/Amass/Subfinder are cataloged only for
+passive source profiles. ExifTool, Tesseract, ImageHash and OpenCV are invoked through fixed deterministic media paths,
+with bounded input/output rather than model-composed commands.
 
 Holehe and password-reset enumeration are intentionally excluded. Active port scanning, vulnerability probing, credential
 testing, password-reset side channels, and evasion/rotation mechanisms are outside the passive-data product boundary.
@@ -71,8 +72,10 @@ testing, password-reset side channels, and evasion/rotation mechanisms are outsi
 ## Media and vision
 
 Deep/Overnight runs extract `og:image` and public `<img>` leads, download bounded raster formats, content-address them by
-SHA-256, and connect them to source/snapshot/artifact/observation graph nodes. No local OCR, embeddings, face model or other
-ML is loaded on the VPS.
+SHA-256, and connect them to source/snapshot/artifact/observation graph nodes. The local-first stack extracts ExifTool
+metadata, multilingual Tesseract OCR, ImageHash perceptual fingerprints and optional OpenCV dimensions/quality/edge
+metrics before any remote vision call. Important artifacts are copied or hard-linked into each case workspace. No face
+identity model is loaded.
 
 For JS-heavy public pages, `TRACEWEAVE_BROWSER_BACKEND=auto` first tries configured Cloudflare Browser Rendering `/markdown`
 and falls back to local Crawl4AI only when installed. Three Cloudflare account pairs are rotated under their normal account

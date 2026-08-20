@@ -55,7 +55,7 @@ def research(
     angle: Annotated[str, typer.Option("--angle", "-a", help="Research angle / prioritization lens")] = "",
     mode: Annotated[
         str, typer.Option("--mode", "-m", help="quick, standard, deep, or overnight")
-    ] = "standard",
+    ] = "deep",
     rounds: Annotated[int | None, typer.Option("--rounds", "-r", help="Plan/search rounds")] = None,
     language: Annotated[str, typer.Option("--language", "-l", help="Search language, or all")] = "all",
     depth: Annotated[int | None, typer.Option("--depth", help="Best-first recursive depth, 0..5")] = None,

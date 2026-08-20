@@ -82,6 +82,7 @@ class ModelRouter:
         self._task_context: contextvars.ContextVar[str] = contextvars.ContextVar(
             "traceweave_router_task", default="general"
         )
+        self._preferred_deployment: str | None = None
 
     def _build_deployments(self) -> list[Deployment]:
         cfg = load_provider_config(self.settings)
@@ -123,6 +124,10 @@ class ModelRouter:
     def reload(self) -> int:
         """Reload providers.toml and token environment variables without resetting persisted health."""
         self.deployments = self._build_deployments()
+        if self._preferred_deployment and not any(
+            dep.deployment_key == self._preferred_deployment for dep in self.deployments
+        ):
+            self._preferred_deployment = None
         return len(self.deployments)
 
     async def json(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> dict:
@@ -347,6 +352,8 @@ class ModelRouter:
             "credential": dep.credential_id,
             "model": dep.model_name,
             "tier": str(dep.extra.get("tier", "")),
+            "deployment_key": dep.deployment_key,
+            "preferred": str(dep.deployment_key == self._preferred_deployment).lower(),
         }
 
     def _task_timeout(self, task: str) -> float:
@@ -361,6 +368,8 @@ class ModelRouter:
     def _task_attempts(self, task: str) -> int:
         configured = self.settings.router_max_attempts
         if task == "intent":
+            return min(4, configured)
+        if task in {"planning", "replanning", "verification"}:
             return min(4, configured)
         if task in {"triage", "claim", "entity", "claim_extraction", "entity_extraction"}:
             return min(3, configured)
@@ -451,7 +460,8 @@ class ModelRouter:
             )
             latency = float(model_stats.get("latency_ema") or 0)
             # Lower is better. Priority is explicit; health and latency only break/adjust it rather than overriding intent.
-            score = (dep.priority + failure_ratio * 35 + min(latency, 20) * 1.5) / dep.weight
+            preference = -10_000 if dep.deployment_key == self._preferred_deployment else 0
+            score = (dep.priority + failure_ratio * 35 + min(latency, 20) * 1.5 + preference) / dep.weight
             candidates.append(CandidateView(dep, score, cred_cd, dep_cd, task_cd))
         if not candidates:
             return None
@@ -627,6 +637,8 @@ class ModelRouter:
                     "credential": dep.credential_id,
                     "model": dep.model_id,
                     "model_name": dep.model_name,
+                    "deployment_key": dep.deployment_key,
+                    "preferred": dep.deployment_key == self._preferred_deployment,
                     "driver": dep.driver,
                     "tasks": ",".join(sorted(dep.tasks)),
                     "healthy": until <= now,
@@ -637,6 +649,20 @@ class ModelRouter:
                 }
             )
         return rows
+
+    @property
+    def preferred_deployment(self) -> str | None:
+        return self._preferred_deployment
+
+    def prefer(self, deployment_key: str | None) -> bool:
+        """Prefer one route while retaining health-based fallback to the remaining mesh."""
+        if not deployment_key or deployment_key.casefold() == "auto":
+            self._preferred_deployment = None
+            return True
+        if not any(dep.deployment_key == deployment_key for dep in self.deployments):
+            return False
+        self._preferred_deployment = deployment_key
+        return True
 
     def _check_run_budget(self, run_id: str | None, *, vision: bool = False) -> None:
         if not run_id:
@@ -662,3 +688,4 @@ def _looks_like_refusal(text: str) -> bool:
 
 def _as_response(value: ProviderResponse | str) -> ProviderResponse:
     return value if isinstance(value, ProviderResponse) else ProviderResponse(text=str(value))
+
