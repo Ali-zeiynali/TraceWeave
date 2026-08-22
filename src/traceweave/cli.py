@@ -12,6 +12,7 @@ from rich.table import Table
 
 from traceweave import __version__
 from traceweave.exporter import Exporter
+from traceweave.mcp import MCPError, StreamableHTTPMCPClient, load_mcp_servers
 from traceweave.models import ProgressEvent, ResearchSpec
 from traceweave.runtime import build_runtime
 from traceweave.skills import SkillRegistry
@@ -53,9 +54,7 @@ def tui() -> None:
 def research(
     topic: Annotated[str, typer.Argument(help="Research topic or question")],
     angle: Annotated[str, typer.Option("--angle", "-a", help="Research angle / prioritization lens")] = "",
-    mode: Annotated[
-        str, typer.Option("--mode", "-m", help="quick, standard, deep, or overnight")
-    ] = "deep",
+    mode: Annotated[str, typer.Option("--mode", "-m", help="quick, standard, deep, or overnight")] = "deep",
     rounds: Annotated[int | None, typer.Option("--rounds", "-r", help="Plan/search rounds")] = None,
     language: Annotated[str, typer.Option("--language", "-l", help="Search language, or all")] = "all",
     depth: Annotated[int | None, typer.Option("--depth", help="Best-first recursive depth, 0..5")] = None,
@@ -74,6 +73,13 @@ def research(
     max_vision_calls: Annotated[
         int, typer.Option("--max-vision-calls", help="Hard per-run remote vision-attempt budget")
     ] = 0,
+    prefer_model: Annotated[
+        str,
+        typer.Option(
+            "--prefer-model",
+            help="Exact deployment key from `traceweave providers --json`; healthy fallback remains enabled",
+        ),
+    ] = "",
 ) -> None:
     """Run iterative research without opening the TUI."""
     if mode not in {"quick", "standard", "deep", "overnight"}:
@@ -93,8 +99,11 @@ def research(
         }.get(event.kind, "dim")
         console.print(f"[{color}]{event.kind}[/{color}] {event.message}")
 
+    runtime = build_runtime(callback=progress)
+    if prefer_model and (runtime.router is None or not runtime.router.prefer(prefer_model)):
+        raise typer.BadParameter("unknown deployment key; use `traceweave providers --task planning --json`")
+
     async def run() -> str:
-        runtime = build_runtime(callback=progress)
         spec = ResearchSpec(
             topic=topic,
             angle=angle,
@@ -227,15 +236,24 @@ def providers(
     sync: bool = typer.Option(
         False, "--sync", help="Refresh credential-scoped /models catalogs before display"
     ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit exact deployment keys and health as machine-readable JSON"
+    ),
 ) -> None:
     """Show provider/token/model routes and persistent health."""
     runtime = build_runtime()
+    sync_result: dict[str, str] = {}
     if runtime.router and sync:
-        result = asyncio.run(runtime.router.ensure_catalogs(force=True))
+        sync_result = asyncio.run(runtime.router.ensure_catalogs(force=True))
         runtime.router.reload()
-        console.print(f"[dim]Catalog sync: {result or 'nothing to refresh'}[/dim]")
+        if not json_output:
+            console.print(f"[dim]Catalog sync: {sync_result or 'nothing to refresh'}[/dim]")
     if reload and runtime.router:
         runtime.router.reload()
+    rows = runtime.router.status_rows(task) if runtime.router else []
+    if json_output:
+        console.print_json(data={"task": task, "catalog_sync": sync_result, "routes": rows})
+        return
     table = Table(title=f"Provider routes (task={task})")
     for col in (
         "Provider",
@@ -255,7 +273,7 @@ def providers(
             "[yellow]No usable routes. Configure providers.toml and token environment variables.[/yellow]"
         )
         return
-    for row in runtime.router.status_rows(task):
+    for row in rows:
         table.add_row(
             str(row["provider"]),
             str(row["credential"]),
@@ -288,6 +306,49 @@ def toolbox(category: str = "") -> None:
             str(row["access"]),
             str(row["notes"]),
         )
+    console.print(table)
+
+
+@app.command("mcp")
+def mcp(
+    server: Annotated[str, typer.Option("--server", "-s", help="Configured MCP server name")] = "",
+) -> None:
+    """List configured Streamable HTTP MCP servers and their exposed tools."""
+    servers = [item for item in load_mcp_servers() if item.enabled]
+    if server:
+        servers = [item for item in servers if item.name == server]
+    if not servers:
+        console.print("[yellow]No matching enabled servers in .traceweave/mcp.toml.[/yellow]")
+        return
+
+    async def inspect() -> list[tuple[object, list[dict] | Exception]]:
+        rows = []
+        for item in servers:
+            try:
+                tools = await StreamableHTTPMCPClient(item).list_tools()
+                rows.append((item, tools))
+            except (MCPError, httpx.HTTPError) as exc:
+                rows.append((item, exc))
+        return rows
+
+    import httpx
+
+    table = Table(title="TraceWeave MCP tool discovery")
+    for column in ("Server", "Mode", "Tool", "Allowed", "Description"):
+        table.add_column(column)
+    for item, result in asyncio.run(inspect()):
+        if isinstance(result, Exception):
+            table.add_row(item.name, "error", "—", "no", str(result)[:100])
+            continue
+        for tool in result:
+            name = str(tool.get("name") or "")
+            table.add_row(
+                item.name,
+                "read-only" if item.read_only else "mixed",
+                name,
+                "yes" if name in item.allowed_tools else "no",
+                str(tool.get("description") or "")[:100],
+            )
     console.print(table)
 
 
@@ -353,6 +414,43 @@ def entities(run_id: str, limit: int = 100) -> None:
     for row in runtime.storage.entities_for_run(run_id, limit):
         table.add_row(
             f"E{row['id']}", row["entity_type"], f"{float(row['confidence']):.2f}", row["canonical_name"]
+        )
+    console.print(table)
+
+
+@app.command("verification")
+def verification(run_id: str, limit: int = 200) -> None:
+    """List claim corroboration and contradiction assessments."""
+    runtime = build_runtime()
+    table = Table(title=f"Verification — {run_id}")
+    for column in ("Claim", "Verdict", "Confidence", "Support", "Conflict", "Rationale"):
+        table.add_column(column)
+    for row in runtime.storage.claim_assessments_for_run(run_id, limit):
+        table.add_row(
+            f"C{row['claim_id']}",
+            row["verdict"],
+            f"{float(row['confidence']):.2f}",
+            ",".join(f"C{value}" for value in row["supporting_claim_ids"]),
+            ",".join(f"C{value}" for value in row["conflicting_claim_ids"]),
+            row["rationale"][:100],
+        )
+    console.print(table)
+
+
+@app.command("identity")
+def identity(run_id: str, limit: int = 100) -> None:
+    """List reviewable identity hypotheses and near-duplicate public media."""
+    runtime = build_runtime()
+    table = Table(title=f"Identity hypotheses — {run_id}")
+    for column in ("Entities", "Verdict", "Confidence", "Names", "Evidence"):
+        table.add_column(column)
+    for row in runtime.storage.identity_hypotheses_for_run(run_id, limit):
+        table.add_row(
+            f"E{row['left_entity_id']}↔E{row['right_entity_id']}",
+            row["verdict"],
+            f"{float(row['confidence']):.2f}",
+            f"{row['left_name']} / {row['right_name']}",
+            ",".join(f"C{value}" for value in row["evidence_claim_ids"]),
         )
     console.print(table)
 

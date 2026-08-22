@@ -121,16 +121,22 @@ class Exporter:
     def evidence(self, run_id: str) -> Path:
         run = self._run(run_id)
         claims = self.storage.claims_for_run(run_id, 5000)
+        assessments = {
+            int(item["claim_id"]): item for item in self.storage.claim_assessments_for_run(run_id, 5000)
+        }
         lines = [
             f"# Evidence matrix — {run['topic']}",
             "",
-            "| Claim | Source | Confidence | Verified quote |",
-            "|---|---:|---:|---|",
+            "| Claim | Source | Confidence | Verdict | Verified quote |",
+            "|---|---:|---:|---|---|",
         ]
         for c in claims:
             quote = str(c.get("quote") or "").replace("|", "\\|").replace("\n", " ")[:500]
             claim = str(c["claim_text"]).replace("|", "\\|").replace("\n", " ")
-            lines.append(f"| {claim} | S{c['source_id']} | {float(c['confidence']):.2f} | {quote} |")
+            verdict = assessments.get(int(c["id"]), {}).get("verdict", "unassessed")
+            lines.append(
+                f"| {claim} | S{c['source_id']} | {float(c['confidence']):.2f} | {verdict} | {quote} |"
+            )
         path = self.export_dir / f"{run_id}.evidence.md"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path
@@ -149,6 +155,7 @@ class Exporter:
             "provider_usage": self.storage.provider_usage(run_id=run_id, limit=1000),
             "discoveries": self.storage.discoveries_for_run(run_id, 10000),
             "claims": self.storage.claims_for_run(run_id, 5000),
+            "claim_assessments": self.storage.claim_assessments_for_run(run_id, 5000),
             "frontier": self.storage.frontier_for_run(run_id, 10000),
             "archives": self.storage.archive_captures_for_run(run_id, 10000),
             "citations": self.storage.citations_for_run(run_id, 10000),
@@ -158,6 +165,8 @@ class Exporter:
             "artifacts": self.storage.artifacts_for_run(run_id, 10000),
             "media_leads": self.storage.media_leads_for_run(run_id, 10000),
             "observations": self.storage.observations_for_run(run_id, 10000),
+            "identity_hypotheses": self.storage.identity_hypotheses_for_run(run_id, 5000),
+            "artifact_matches": self.storage.artifact_matches_for_run(run_id, 5000),
             "tasks": self.storage.tasks_for_run(run_id, 10000),
             "research_edges": self.storage.research_edges_for_run(run_id, 20000),
             "events": self.storage.events_for_run(run_id, 10000),
@@ -336,6 +345,7 @@ class Exporter:
             json.dumps(manifest, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
         )
         return case_dir
+
     def _run(self, run_id: str) -> dict:
         run = self.storage.get_run(run_id)
         if not run:

@@ -60,7 +60,28 @@ class Planner:
         plans = [result for result in results if isinstance(result, Plan)]
         if not plans:
             return self._heuristic(spec, round_no=1, completed=[])
-        return self._merge_initial_plans(plans, spec)
+        merged = self._merge_initial_plans(plans, spec)
+        if len(plans) == 1:
+            return merged
+        try:
+            deadline = {"quick": 60, "standard": 120, "deep": 180, "overnight": 240}[spec.mode]
+            async with asyncio.timeout(deadline):
+                data = await self.provider.json(
+                    system=_prompt("lead_plan.txt") + "\n\n" + self.skills.for_task("planning"),
+                    user=json.dumps(
+                        {
+                            "research": payload,
+                            "specialist_plans": [plan.model_dump() for plan in plans],
+                            "deterministic_merge": merged.model_dump(),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    task="planning",
+                    run_id=run_id,
+                )
+            return self._normalize_plan(Plan.model_validate(data), spec, [])
+        except (LLMError, TimeoutError, ValueError, KeyError, TypeError):
+            return merged
 
     def _merge_initial_plans(self, plans: list[Plan], spec: ResearchSpec) -> Plan:
         def unique(values: list[str], limit: int) -> list[str]:

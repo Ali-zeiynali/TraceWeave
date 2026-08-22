@@ -19,9 +19,12 @@ from textual.widgets.option_list import Option
 from traceweave import __version__
 from traceweave.agent import PromptInterpreter
 from traceweave.exporter import Exporter
+from traceweave.mcp import load_mcp_servers
 from traceweave.models import ProgressEvent, ResearchSpec
 from traceweave.providers.presets import preset_warnings
 from traceweave.runtime import build_runtime
+from traceweave.skills import SkillRegistry
+from traceweave.tooling import tool_status_rows
 
 COMMANDS = [
     "/research ",
@@ -47,6 +50,11 @@ COMMANDS = [
     "/graph",
     "/media",
     "/observations",
+    "/verification",
+    "/identity",
+    "/skills",
+    "/toolbox",
+    "/mcp",
     "/providers",
     "/providers sync",
     "/providers reload",
@@ -92,7 +100,10 @@ HELP = """[b]Research[/b]
 
 [b]Evidence & graph[/b]
 /sources [RUN]  /claims [RUN]  /frontier [RUN]  /archives [RUN]  /citations [RUN]
-/entities [RUN]  /timeline [RUN]  /graph [RUN]  /media [RUN]  /observations [RUN]
+/entities [RUN]  /timeline [RUN]  /graph [RUN]  /media [RUN]  /observations [RUN]  /verification [RUN]  /identity [RUN]
+
+[b]Extensions[/b]
+/skills  /toolbox  /mcp
 
 [b]Providers[/b]
 /providers  /providers sync  /providers reload  /router  /dashboard
@@ -121,12 +132,17 @@ class TraceWeaveApp(App):
     Screen { layout: vertical; background: #0e0d12; color: #e8e2ec; }
 
     #landing { height: 1fr; }
+    #landing-top { height: 3; padding: 1 2 0 2; text-align: right; color: $text-muted; }
+    #landing-center { height: 1fr; }
     #launch-card { width: 78; max-width: 88%; height: auto; }
-    #logo { height: 3; content-align: center middle; text-align: center; text-style: bold; color: #d7a7ff; }
-    #launch-input { height: 3; border: none; border-left: thick #a86cf2; background: #17141d; padding: 0 1; }
+    #logo { height: 4; content-align: center middle; text-align: center; text-style: bold; color: #d7a7ff; }
+    #tagline { height: 2; content-align: center top; text-align: center; color: $text-muted; }
+    #launch-input { height: 4; border: none; border-left: thick #a86cf2; background: #17141d; padding: 1 1 0 1; content-align: left middle; }
     #launch-input:focus { border-left: thick #e0b7ff; }
     #launch-meta { height: 1; margin-top: 1; content-align: center middle; text-align: center; color: $text-muted; }
-    #tip { height: 2; margin-top: 1; content-align: center top; text-align: center; color: $text-muted; }
+    #landing-footer { height: 4; padding: 0 2 1 2; }
+    #landing-capabilities { width: 1fr; content-align: left bottom; color: $text-muted; }
+    #tip { width: 1fr; content-align: right bottom; text-align: right; color: $text-muted; }
     #launch-palette { display: none; height: 14; margin-top: 1; background: #17141d; border-left: thick #a86cf2; }
     #launch-palette > .option-list--option-highlighted { background: #352442; color: #ffffff; }
 
@@ -147,7 +163,7 @@ class TraceWeaveApp(App):
     #log { height: 1fr; }
     #command-palette { display: none; height: 12; margin: 0 3; background: #17141d; border-left: thick #a86cf2; }
     #command-palette > .option-list--option-highlighted { background: #352442; color: #ffffff; }
-    #command { display: none; height: 3; margin: 0 3 1 3; border: none; border-left: thick #a86cf2; background: #17141d; padding: 0 1; }
+    #command { display: none; height: 4; margin: 0 3 1 3; border: none; border-left: thick #a86cf2; background: #17141d; padding: 1 1 0 1; content-align: left middle; }
     #command:focus { border-left: thick #e0b7ff; }
     """
     BINDINGS = [
@@ -198,16 +214,21 @@ class TraceWeaveApp(App):
         self._palette_commands: dict[str, list[str]] = {}
 
     def compose(self) -> ComposeResult:
-        with CenterMiddle(id="landing"), Vertical(id="launch-card"):
-            yield Static(f"TRACEWEAVE  [dim]v{__version__}[/dim]", id="logo")
-            yield Input(
-                placeholder="Research anything…",
-                id="launch-input",
-                suggester=SuggestFromList(COMMANDS, case_sensitive=False),
-            )
-            yield OptionList(id="launch-palette", compact=True)
-            yield Static("", id="launch-meta")
-            yield Static(self._tip, id="tip")
+        with Vertical(id="landing"):
+            yield Static(f"PUBLIC-SOURCE RESEARCH OS  ·  v{__version__}", id="landing-top")
+            with CenterMiddle(id="landing-center"), Vertical(id="launch-card"):
+                yield Static("T R A C E W E A V E", id="logo")
+                yield Static("Evidence first · durable provenance · human-verifiable findings", id="tagline")
+                yield Input(
+                    placeholder="What should TraceWeave investigate?",
+                    id="launch-input",
+                    suggester=SuggestFromList(COMMANDS, case_sensitive=False),
+                )
+                yield OptionList(id="launch-palette", compact=True)
+                yield Static("", id="launch-meta")
+            with Horizontal(id="landing-footer"):
+                yield Static("QUICK  ·  STANDARD  ·  DEEP  ·  OVERNIGHT", id="landing-capabilities")
+                yield Static(self._tip, id="tip")
         with Vertical(id="workspace"):
             with Horizontal(id="workbody"):
                 with Vertical(id="primary"):
@@ -293,7 +314,10 @@ class TraceWeaveApp(App):
     def _session_tokens(self) -> int:
         total = 0
         for run_id in self._session_runs:
-            total += sum(int(row.get("total_tokens") or 0) for row in self.runtime.storage.provider_usage(run_id=run_id))
+            total += sum(
+                int(row.get("total_tokens") or 0)
+                for row in self.runtime.storage.provider_usage(run_id=run_id)
+            )
         return total
 
     def _persist_session_meta(self) -> None:
@@ -356,7 +380,9 @@ class TraceWeaveApp(App):
         if run.get("final_summary"):
             report.write(RichMarkdown(str(run["final_summary"])))
         else:
-            report.write(RichMarkdown(f"# {run['topic']}\n\nResearch state restored; evidence collection can resume."))
+            report.write(
+                RichMarkdown(f"# {run['topic']}\n\nResearch state restored; evidence collection can resume.")
+            )
         plan = self.runtime.storage.get_plan(run_id, max(1, int(run.get("current_round") or 1)))
         if plan:
             self._render_plan(plan.objective, plan.focus, plan.queries, plan.gaps)
@@ -482,9 +508,7 @@ class TraceWeaveApp(App):
                 report.clear()
                 report.write(RichMarkdown(str(run["final_summary"])))
         elif event.kind == "run.failed":
-            report.write(
-                f"[bold red]Run failed but checkpoints were retained.[/bold red]\n{event.message}"
-            )
+            report.write(f"[bold red]Run failed but checkpoints were retained.[/bold red]\n{event.message}")
         self._update_status()
 
     @on(Input.Submitted, "#launch-input")
@@ -511,9 +535,7 @@ class TraceWeaveApp(App):
             self._palette_commands[palette_id] = []
             return
         matches = [
-            command
-            for command in COMMANDS
-            if normalized == "/" or command.casefold().startswith(normalized)
+            command for command in COMMANDS if normalized == "/" or command.casefold().startswith(normalized)
         ][:14]
         self._palette_commands[palette_id] = matches
         palette.set_options(
@@ -641,8 +663,34 @@ class TraceWeaveApp(App):
             "/frontier",
             "/media",
             "/observations",
+            "/verification",
+            "/identity",
         }:
             self._inspect(cmd, args)
+        elif cmd == "/skills":
+            self._show_workspace()
+            for row in SkillRegistry().status_rows():
+                log.write(
+                    f"[cyan]{row['name']}[/cyan] v{row['version']} {row['origin']} "
+                    f"tasks={','.join(str(value) for value in row['tasks']) or 'manual'}"
+                )
+        elif cmd == "/toolbox":
+            self._show_workspace()
+            for row in tool_status_rows():
+                color = "green" if row["status"] in {"ready", "built-in"} else "yellow"
+                log.write(
+                    f"[{color}]{row['id']}[/{color}] {row['category']} {row['status']} · {row['notes']}"
+                )
+        elif cmd == "/mcp":
+            self._show_workspace()
+            servers = load_mcp_servers()
+            if not servers:
+                log.write("[yellow]No servers configured in .traceweave/mcp.toml.[/yellow]")
+            for server in servers:
+                log.write(
+                    f"[cyan]{server.name}[/cyan] {'enabled' if server.enabled else 'disabled'} "
+                    f"{'read-only' if server.read_only else 'mixed'} allowed={len(server.allowed_tools)} {server.url}"
+                )
         elif cmd == "/providers":
             await self._providers_command(args)
         elif cmd == "/dashboard":
@@ -785,6 +833,23 @@ class TraceWeaveApp(App):
             for x in self.runtime.storage.observations_for_run(rid, 100):
                 log.write(
                     f"O{x['id']} I={float(x['importance']):.0f} Rare={float(x['rarity']):.0f} {x['kind']} {x['value_text'][:120]}"
+                )
+        elif cmd == "/verification":
+            for x in self.runtime.storage.claim_assessments_for_run(rid, 100):
+                log.write(
+                    f"C{x['claim_id']} {x['verdict']:<13} {float(x['confidence']):.2f} "
+                    f"support={x['supporting_claim_ids']} conflict={x['conflicting_claim_ids']}"
+                )
+        elif cmd == "/identity":
+            for x in self.runtime.storage.identity_hypotheses_for_run(rid, 100):
+                log.write(
+                    f"E{x['left_entity_id']}↔E{x['right_entity_id']} {x['verdict']:<9} "
+                    f"{float(x['confidence']):.2f} {x['left_name']} / {x['right_name']}"
+                )
+            for x in self.runtime.storage.artifact_matches_for_run(rid, 100):
+                log.write(
+                    f"{x['verdict']:<14} d={float(x['distance']):.0f} "
+                    f"{x['left_artifact_id']} ↔ {x['right_artifact_id']}"
                 )
 
     async def _providers_command(self, args: list[str]) -> None:
@@ -939,7 +1004,9 @@ class TraceWeaveApp(App):
         self._working = True
         report = self.query_one("#report", RichLog)
         report.clear()
-        report.write(RichMarkdown(f"# {topic}\n\nInterpreting the request and mapping the first research pass…"))
+        report.write(
+            RichMarkdown(f"# {topic}\n\nInterpreting the request and mapping the first research pass…")
+        )
         defaults = ResearchSpec(
             topic=topic,
             angle=self.angle or inferred.angle,

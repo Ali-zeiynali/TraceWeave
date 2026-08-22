@@ -14,7 +14,9 @@ commands. Stability describes the integration surface, not the truth of an indiv
 | GLEIF | LEI/legal entities | Full-text company discovery with raw record provenance. |
 | ROR | research organizations | Organization candidates and canonical ROR IDs. |
 | ORCID public API | researcher candidates | Candidate discovery only. A name-only hit is never auto-merged into a person. |
-| SEC EDGAR | US filings | Cataloged for a typed CIK/filing adapter; no key required. |
+| Certificate Transparency (`crt.sh`) | passive certificate names | Exact domains produce normalized historical DNS-name leads. |
+| PeeringDB | public network/operator records | Organization search through the public API. |
+| SEC EDGAR | US public-company index | Company/ticker/CIK lookup; requires a descriptive `SEC_USER_AGENT`. |
 | OpenAlex/Crossref/arXiv | publications/citations | Existing specialist adapters. |
 | Bluesky public AppView | public posts | Deep/Overnight search through the public `searchPosts` endpoint. |
 | Wayback/Common Crawl | historical public web | Time-scoped captures, separately preserved from current pages. |
@@ -111,10 +113,10 @@ third-party AI Gateway routes can be billed. Official references:
 ## Skills and MCP extensions
 
 Built-in skills are selected per task so unrelated instructions do not consume context. Operators can hot-load project skills
-from `.traceweave/skills/catalog.toml`; `traceweave skills` shows origin, task scope and enabled state. The bundled web-content
+from `.traceweave/skills/catalog.toml` and compatible `.agents`, `.opencode`, or `.claude` `SKILL.md` directories; `traceweave skills` shows origin, task scope and enabled state. The bundled web-content
 firewall treats fetched instructions as evidence, never as agent commands, and the verification skill requires source-bound
 claims.
 
-Arbitrary MCP execution is not enabled in this release. An MCP server can expose mutating, private or active tools, so adding
-one safely requires a typed public-data adapter, explicit tool allowlist, argument schema validation, time/budget limits and
-provenance conversion. This remains a roadmap item rather than silently granting every MCP server agent authority.
+MCP 2025-11-25 Streamable HTTP server discovery and exact tool allowlists are supported. The autonomous engine does not
+execute discovered tools by itself: returned public records still need a typed provenance conversion before they become
+evidence. See `docs/MCP_AND_SKILLS.md`.

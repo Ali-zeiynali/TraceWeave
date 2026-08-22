@@ -142,6 +142,17 @@ CREATE TABLE IF NOT EXISTS evidence (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS claim_assessments (
+    claim_id INTEGER PRIMARY KEY REFERENCES claims(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    verdict TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    supporting_claim_ids_json TEXT NOT NULL DEFAULT '[]',
+    conflicting_claim_ids_json TEXT NOT NULL DEFAULT '[]',
+    rationale TEXT NOT NULL DEFAULT '',
+    assessed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS frontier (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -304,6 +315,20 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
     PRIMARY KEY(entity_id, alias)
 );
 
+CREATE TABLE IF NOT EXISTS identity_hypotheses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    left_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    right_entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    verdict TEXT NOT NULL DEFAULT 'uncertain',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    evidence_claim_ids_json TEXT NOT NULL DEFAULT '[]',
+    rationale TEXT NOT NULL DEFAULT '',
+    assessed_at TEXT NOT NULL,
+    UNIQUE(run_id, left_entity_id, right_entity_id),
+    CHECK(left_entity_id < right_entity_id)
+);
+
 CREATE TABLE IF NOT EXISTS relationships (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -418,6 +443,19 @@ CREATE TABLE IF NOT EXISTS observations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS artifact_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    left_artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    right_artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    algorithm TEXT NOT NULL,
+    distance REAL NOT NULL,
+    verdict TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, left_artifact_id, right_artifact_id, algorithm),
+    CHECK(left_artifact_id < right_artifact_id)
+);
+
 CREATE TABLE IF NOT EXISTS media_leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -441,11 +479,13 @@ CREATE INDEX IF NOT EXISTS idx_run_sources_run ON run_sources(run_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_source ON snapshots(source_id, fetched_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analysis_run ON source_analysis(run_id, relevance DESC);
 CREATE INDEX IF NOT EXISTS idx_claims_run ON claims(run_id, source_id);
+CREATE INDEX IF NOT EXISTS idx_claim_assessments_run ON claim_assessments(run_id, verdict);
 CREATE INDEX IF NOT EXISTS idx_frontier_run ON frontier(run_id, status, score DESC);
 CREATE INDEX IF NOT EXISTS idx_archive_run ON archive_captures(run_id, source_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_citations_run ON citations(run_id, source_id);
 CREATE INDEX IF NOT EXISTS idx_source_stage_run ON source_stage_state(run_id, source_id, stage);
 CREATE INDEX IF NOT EXISTS idx_entities_run ON entities(run_id, entity_type, canonical_name);
+CREATE INDEX IF NOT EXISTS idx_identity_run ON identity_hypotheses(run_id, verdict);
 CREATE INDEX IF NOT EXISTS idx_relationships_run ON relationships(run_id, source_entity_id);
 CREATE INDEX IF NOT EXISTS idx_timeline_run ON timeline_events(run_id, event_time);
 CREATE INDEX IF NOT EXISTS idx_research_edges_run ON research_edges(run_id, from_type, to_type);
@@ -454,6 +494,7 @@ CREATE INDEX IF NOT EXISTS idx_router_attempts_time ON router_attempts(created_a
 CREATE INDEX IF NOT EXISTS idx_tasks_lease ON research_tasks(run_id, state, available_at, priority);
 CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id, source_id);
 CREATE INDEX IF NOT EXISTS idx_observations_run ON observations(run_id, importance DESC, rarity DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_matches_run ON artifact_matches(run_id, verdict, distance);
 CREATE INDEX IF NOT EXISTS idx_media_leads_run ON media_leads(run_id, status, source_id);
 """
 
@@ -1061,6 +1102,57 @@ class Storage:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def save_claim_assessment(
+        self,
+        run_id: str,
+        claim_id: int,
+        *,
+        verdict: str,
+        confidence: float,
+        supporting_claim_ids: list[int] | None = None,
+        conflicting_claim_ids: list[int] | None = None,
+        rationale: str = "",
+    ) -> None:
+        allowed = {"corroborated", "single_source", "contested", "insufficient"}
+        if verdict not in allowed:
+            raise ValueError(f"invalid claim verdict: {verdict}")
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO claim_assessments
+                   (claim_id,run_id,verdict,confidence,supporting_claim_ids_json,
+                    conflicting_claim_ids_json,rationale,assessed_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(claim_id) DO UPDATE SET verdict=excluded.verdict,
+                   confidence=excluded.confidence,
+                   supporting_claim_ids_json=excluded.supporting_claim_ids_json,
+                   conflicting_claim_ids_json=excluded.conflicting_claim_ids_json,
+                   rationale=excluded.rationale,assessed_at=excluded.assessed_at""",
+                (
+                    claim_id,
+                    run_id,
+                    verdict,
+                    min(1.0, max(0.0, float(confidence))),
+                    json.dumps(sorted(set(supporting_claim_ids or []))),
+                    json.dumps(sorted(set(conflicting_claim_ids or []))),
+                    rationale[:2000],
+                    utc_now(),
+                ),
+            )
+
+    def claim_assessments_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM claim_assessments WHERE run_id=? ORDER BY claim_id LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["supporting_claim_ids"] = json.loads(item.pop("supporting_claim_ids_json") or "[]")
+            item["conflicting_claim_ids"] = json.loads(item.pop("conflicting_claim_ids_json") or "[]")
+            out.append(item)
+        return out
+
     # ---------- frontier ----------
     def add_frontier(
         self,
@@ -1433,6 +1525,68 @@ class Storage:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def entity_aliases_for_run(self, run_id: str) -> dict[int, list[str]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT a.entity_id,a.alias FROM entity_aliases a
+                   JOIN entities e ON e.id=a.entity_id WHERE e.run_id=? ORDER BY a.entity_id,a.alias""",
+                (run_id,),
+            ).fetchall()
+        aliases: dict[int, list[str]] = {}
+        for row in rows:
+            aliases.setdefault(int(row["entity_id"]), []).append(str(row["alias"]))
+        return aliases
+
+    def save_identity_hypothesis(
+        self,
+        run_id: str,
+        left_entity_id: int,
+        right_entity_id: int,
+        *,
+        verdict: str,
+        confidence: float,
+        evidence_claim_ids: list[int] | None = None,
+        rationale: str = "",
+    ) -> None:
+        left, right = sorted((int(left_entity_id), int(right_entity_id)))
+        if left == right or verdict not in {"same", "different", "uncertain"}:
+            raise ValueError("invalid identity hypothesis")
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO identity_hypotheses
+                   (run_id,left_entity_id,right_entity_id,verdict,confidence,evidence_claim_ids_json,rationale,assessed_at)
+                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(run_id,left_entity_id,right_entity_id) DO UPDATE SET
+                   verdict=excluded.verdict,confidence=excluded.confidence,
+                   evidence_claim_ids_json=excluded.evidence_claim_ids_json,rationale=excluded.rationale,
+                   assessed_at=excluded.assessed_at""",
+                (
+                    run_id,
+                    left,
+                    right,
+                    verdict,
+                    min(1.0, max(0.0, float(confidence))),
+                    json.dumps(sorted(set(evidence_claim_ids or []))),
+                    rationale[:2000],
+                    utc_now(),
+                ),
+            )
+
+    def identity_hypotheses_for_run(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT h.*,l.canonical_name left_name,r.canonical_name right_name
+                   FROM identity_hypotheses h JOIN entities l ON l.id=h.left_entity_id
+                   JOIN entities r ON r.id=h.right_entity_id WHERE h.run_id=?
+                   ORDER BY h.confidence DESC,h.id LIMIT ?""",
+                (run_id, limit),
+            ).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["evidence_claim_ids"] = json.loads(item.pop("evidence_claim_ids_json") or "[]")
+            out.append(item)
+        return out
+
     def relationships_for_run(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -1749,6 +1903,35 @@ class Storage:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM artifacts WHERE run_id=? ORDER BY created_at,id LIMIT ?",
+                (run_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_artifact_match(
+        self,
+        run_id: str,
+        left_artifact_id: str,
+        right_artifact_id: str,
+        *,
+        algorithm: str,
+        distance: float,
+        verdict: str,
+    ) -> None:
+        left, right = sorted((left_artifact_id, right_artifact_id))
+        if left == right:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO artifact_matches
+                   (run_id,left_artifact_id,right_artifact_id,algorithm,distance,verdict,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (run_id, left, right, algorithm, float(distance), verdict, utc_now()),
+            )
+
+    def artifact_matches_for_run(self, run_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM artifact_matches WHERE run_id=? ORDER BY distance,id LIMIT ?",
                 (run_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -2190,8 +2373,7 @@ class Storage:
             shared_meaningful = {
                 term
                 for term in query_terms & words(haystack)
-                if not term.isdigit()
-                and term not in {"or", "and", "not", "site", "filetype"}
+                if not term.isdigit() and term not in {"or", "and", "not", "site", "filetype"}
             }
             if score >= 0.20 and shared_meaningful:
                 scored.append((score, row))

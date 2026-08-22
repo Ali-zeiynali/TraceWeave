@@ -50,5 +50,8 @@ async def test_tui_landing_mounts_and_workspace_starts_hidden(
         workspace = app.query_one("#workspace")
         landing = app.query_one("#landing")
         assert launch.has_focus
+        assert launch.region.height == 4
+        assert launch.styles.padding.top == 1
+        assert launch.content_region.y >= launch.region.y + 1
         assert bool(landing.display)
         assert not bool(workspace.display)

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.2 — 2026-08-22
+
+### Added
+- Lead-agent reconciliation over parallel specialist planning branches.
+- Claim assessment with independent-domain corroboration and contradiction records.
+- Reviewable person-identity hypotheses and deterministic near-duplicate media matching.
+- Multi-record DNS, Certificate Transparency, PeeringDB, URLScan search, Companies House and SEC/EDGAR adapters.
+- Streamable HTTP MCP discovery with lifecycle negotiation, HTTPS/loopback validation and tool allowlists.
+- Project Agent Skills discovery compatible with `.agents`, `.opencode` and `.claude` layouts.
+- Official OpenAI, DeepSeek, xAI, Together and Fireworks provider catalog presets with paid-route gating.
+- Verification and identity CLI/TUI views and export sections.
+
+### Changed
+- Reworked the onboarding screen and moved input text to a stable vertical baseline.
+- Toolbox now labels non-integrated ideas as `catalog-only` instead of implying they execute.
+- Free-form factual synthesis is replaced by ID-only lead-agent grouping and deterministic rendering from persisted claims, quotes, verdicts, observations, identity hypotheses, and media matches.
+- In-flight route leasing and stage-aware attempt reserves prevent provider failures from starving claim extraction and final synthesis.
+- Public version, package metadata and user agent are now 1.0.2.
+
 ## 0.5.0 — 2026-08-19
 
 ### Added

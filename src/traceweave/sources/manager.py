@@ -50,7 +50,13 @@ class SpecialistManager:
         self.wayback = WaybackSource(timeout=settings.search_timeout_seconds)
         self.commoncrawl = CommonCrawlSource(timeout=settings.search_timeout_seconds)
         self.registries = RegistrySources(
-            timeout=settings.search_timeout_seconds, user_agent=settings.user_agent
+            timeout=settings.search_timeout_seconds,
+            user_agent=settings.user_agent,
+            certificate_transparency_enabled=settings.certificate_transparency_enabled,
+            urlscan_enabled=settings.urlscan_enabled,
+            sec_edgar_enabled=settings.sec_edgar_enabled,
+            peeringdb_enabled=settings.peeringdb_enabled,
+            companies_house_enabled=settings.companies_house_enabled,
         )
         self.social = PublicSocialSources(
             timeout=settings.search_timeout_seconds,

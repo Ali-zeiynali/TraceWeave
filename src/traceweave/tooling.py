@@ -20,9 +20,12 @@ class ToolSpec:
     executable: str = ""
     python_module: str = ""
     passive: bool = True
+    integrated: bool = True
     notes: str = ""
 
     def status(self) -> str:
+        if not self.integrated:
+            return "catalog-only"
         if self.python_module:
             return "ready" if importlib.util.find_spec(self.python_module) else "missing"
         if self.executable:
@@ -63,7 +66,14 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         notes="Existing scans only; TraceWeave does not submit active scans.",
     ),
     ToolSpec("gleif", "corporate", "stable", "public API", notes="LEI and legal-entity records."),
-    ToolSpec("sec-edgar", "corporate", "stable", "public API", notes="No-auth submissions and filings."),
+    ToolSpec(
+        "sec-edgar",
+        "corporate",
+        "stable",
+        "public API",
+        env_vars=("SEC_USER_AGENT",),
+        notes="Public filer index; SEC-compliant contact-bearing User-Agent is required.",
+    ),
     ToolSpec("companies-house", "corporate", "stable", "API", env_vars=("COMPANIES_HOUSE_API_KEY",)),
     ToolSpec("ror", "research", "stable", "public API", notes="Research organizations."),
     ToolSpec(
@@ -98,6 +108,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "social",
         "conditional",
         "public instance APIs",
+        integrated=False,
         notes="Coverage depends on instance federation.",
     ),
     ToolSpec(
@@ -106,6 +117,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "restricted official API",
         env_vars=("LINKEDIN_ACCESS_TOKEN",),
+        integrated=False,
         notes="Limited by LinkedIn product approval.",
     ),
     ToolSpec(
@@ -120,6 +132,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "social",
         "import-only",
         "user-provided export",
+        integrated=False,
         notes="Recommended for complete account-owned data.",
     ),
     ToolSpec(
@@ -128,6 +141,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="sherlock",
+        integrated=False,
         notes="Public username existence checks.",
     ),
     ToolSpec(
@@ -136,6 +150,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="maigret",
+        integrated=False,
         notes="Public profile discovery with false-positive validation.",
     ),
     ToolSpec(
@@ -144,6 +159,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="spiderfoot",
+        integrated=False,
         notes="Passive modules and existing public records only; no active target scans.",
     ),
     ToolSpec(
@@ -152,6 +168,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="theHarvester",
+        integrated=False,
         notes="Passive search-engine and public API sources only.",
     ),
     ToolSpec(
@@ -160,6 +177,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="amass",
+        integrated=False,
         notes="Only the passive subcommand/profile is allowed.",
     ),
     ToolSpec(
@@ -168,6 +186,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI",
         executable="subfinder",
+        integrated=False,
         notes="Passive data-source mode only.",
     ),
     ToolSpec(
@@ -176,9 +195,17 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "conditional",
         "local CLI fallback",
         executable="whois",
+        integrated=False,
         notes="RDAP is preferred.",
     ),
-    ToolSpec("dig", "network", "conditional", "local CLI", executable="dig"),
+    ToolSpec("dig", "network", "conditional", "local CLI", executable="dig", integrated=False),
+    ToolSpec(
+        "crtsh",
+        "network",
+        "conditional",
+        "public certificate-transparency index",
+        notes="Passive certificate-name discovery; availability is best effort.",
+    ),
     ToolSpec(
         "tesseract",
         "media",
@@ -231,6 +258,7 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         "media",
         "import-only",
         "user-provided result",
+        integrated=False,
         notes="No stable unrestricted zero-cost reverse-image API exists.",
     ),
 )

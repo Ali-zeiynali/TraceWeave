@@ -1,4 +1,4 @@
-# TraceWeave v0.5
+# TraceWeave v1.0.2
 
 TraceWeave is an open-source, evidence-first research engine for iterative public-web research. It is designed around a simple loop:
 
@@ -6,15 +6,18 @@ TraceWeave is an open-source, evidence-first research engine for iterative publi
 
 It is deliberately **not** a single giant agent prompt. Crawling, provenance, persistence, archive lookup, deduplication, routing, graph state, and resume are normal software components; language models are used where judgment is useful.
 
-## What v0.5 adds
+## What v1.0.2 delivers
 
-- Stage 4 specialist discovery: Wayback CDX, Common Crawl, OpenAlex, Crossref, arXiv, public GitHub search, PDF parsing, citation snowballing.
-- Stage 5 foundation: claim-grounded entities, relationships, timeline events, and a research-edge graph in SQLite.
+- Lead/specialist planning: independent company/people/infrastructure/evidence branches are reconciled by a lead model before execution.
+- Claim verification: literal-grounded claims receive corroborated, single-source, contested, or insufficient assessments; independent domains are required for corroboration.
+- Conservative identity resolution: possible duplicate people remain reviewable hypotheses and are never silently merged. Perceptual hashes detect the same/near-duplicate image, not a face identity.
+- Specialist discovery: Wayback CDX, Common Crawl, OpenAlex, Crossref, arXiv, public GitHub, GLEIF, ROR, ORCID, RDAP, multi-record DNS, RIPEstat, PeeringDB, Certificate Transparency, URLScan existing scans, Companies House, SEC/EDGAR, PDF parsing, and citation snowballing.
+- Claim-grounded entities, relationships, timeline events, identity hypotheses, media matches, and research-edge provenance in SQLite.
 - Credential-scoped model catalogs: provider → token → model. Different tokens on the same router may expose different models.
 - Dynamic routing health at credential, deployment (`token+model`), and task (`token+model+task`) levels.
 - Dynamic cooldown from `Retry-After` / rate-limit headers plus exponential fallback TTLs.
 - Built-in provider presets activated by `.env`; up to five tokens/provider without writing TOML.
-- Centered TUI with a live model-written report, evidence/focus side pane, moving activity indicator, session-token total, slash-command palette and reduced-border quote input.
+- Full-screen, sectioned TUI with a centered research launch, corrected input baseline, live report, evidence/focus side pane, activity state, session-token total, and slash-command palette.
 - Durable sessions, pause/resume, full source provenance, archives/citations/graph exports.
 - Quick/Standard/Deep/Overnight modes with persistent deadlines, model budgets, leased round tasks and crash recovery.
 - Deep/Overnight starts with four isolated planning branches and runs distinct search branches concurrently before gap-driven replanning.
@@ -22,10 +25,12 @@ It is deliberately **not** a single giant agent prompt. Crawling, provenance, pe
 - Prompt-first `traceweave ask "..."`, multilingual intent parsing, refusal/evasion fallback, per-task timeouts, and a provider-usage dashboard.
 - No-key GDELT, MediaWiki and Hacker News discovery; official Instagram professional-account hashtag discovery when configured.
 - Content-addressed public images, ExifTool metadata, multilingual Tesseract OCR, ImageHash fingerprints, optional OpenCV metrics, region-level remote vision, and GraphML export.
+- Streamable HTTP MCP discovery with HTTPS/loopback enforcement, lifecycle negotiation and per-server tool allowlists; Agent Skills are discovered from `.agents`, `.opencode`, and `.claude` project paths.
+- Official provider discovery for OpenAI, DeepSeek, xAI, Together and Fireworks, alongside free-tier/community routes and arbitrary OpenAI-compatible or LiteLLM provider definitions.
 
 ## Safety / scope
 
-TraceWeave v0.5 is designed for public, lawful research. It respects `robots.txt` for normal live crawling, blocks private/link-local targets in the fetcher, treats page content as untrusted data, and does not grant fetched pages or models autonomous shell access. The optional local shell is user-triggered and disabled by default.
+TraceWeave v1.0.2 is designed for public, lawful research. It respects `robots.txt` for normal live crawling, blocks private/link-local targets in the fetcher, treats page content as untrusted data, and does not grant fetched pages or models autonomous shell access. The optional local shell is user-triggered and disabled by default.
 
 This project does not include private-person tracking, inferred private routines/precise locations, credential harvesting, access-control bypass, or unauthorized active network scanning.
 
@@ -236,7 +241,14 @@ python -m build
 - `docs/GRAPH.md` — Stage 5 graph foundation
 - `docs/CONFIGURATION.md` — environment reference
 - `docs/EVIDENCE.md` / `docs/FRONTIER.md` — evidence and traversal invariants
-- `ROADMAP.md` — v0.5 → v1.0
+- `ROADMAP.md` — delivered three-stage v1.0.2 plan and post-release backlog
+- `docs/RELEASE_1_0_2.md` — shipped scope and known limits
+- `docs/QUALITY.md` — anti-slop engineering rules and release gates
+- `docs/MCP_AND_SKILLS.md` — extension configuration and authority boundaries
+- `docs/EVALUATION.md` — bounded live benchmarks and model-route A/B runs
+- `docs/QUALITY.md` — anti-slop engineering and release gates
+- `docs/MCP_AND_SKILLS.md` — MCP/Agent Skills configuration and authority model
+- `docs/RELEASE_1_0_2.md` — release scope, validation and known limitations
 
 ## License
 

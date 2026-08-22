@@ -1,4 +1,4 @@
-# Provider / Model Router — v0.5
+# Provider / Model Router — v1.0.2
 
 ## Built-in provider presets
 

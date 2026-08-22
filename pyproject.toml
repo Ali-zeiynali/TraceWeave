@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traceweave"
-version = "0.5.0"
-description = "Long-horizon evidence-first research with archives, specialist sources, credential-scoped routing, and durable research graphs."
+version = "1.0.2"
+description = "Evidence-first public-source research agent with durable provenance, specialist tools, multi-model routing, and a terminal workspace."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "TraceWeave contributors"}]
 keywords = ["research", "osint", "agent", "tui", "search", "provenance"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

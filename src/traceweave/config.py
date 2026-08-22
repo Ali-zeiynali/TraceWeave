@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     fetch_timeout_seconds: float = 20.0
     fetch_max_bytes: int = 3_000_000
     fetch_concurrency: int = Field(default=4, ge=1, le=16)
-    user_agent: str = "TraceWeave/0.5 (+https://github.com/traceweave/traceweave)"
+    user_agent: str = "TraceWeave/1.0.2 (+https://github.com/traceweave/traceweave)"
     research_query_concurrency: int = Field(default=3, ge=1, le=8)
     respect_robots: bool = True
 
@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     pdf_enabled: bool = True
     registry_sources_enabled: bool = True
     registry_queries_per_round: int = Field(default=1, ge=0, le=5)
+    certificate_transparency_enabled: bool = True
+    urlscan_enabled: bool = True
+    sec_edgar_enabled: bool = True
+    peeringdb_enabled: bool = True
+    companies_house_enabled: bool = True
     public_social_enabled: bool = True
     bluesky_enabled: bool = True
     instagram_official_enabled: bool = False

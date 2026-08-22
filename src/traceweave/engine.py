@@ -21,6 +21,7 @@ from traceweave.fetcher import (
 )
 from traceweave.frontier import FrontierManager
 from traceweave.graph import GraphCurator
+from traceweave.identity import IdentityResolver
 from traceweave.media import analyze_media_locally
 from traceweave.models import ProgressEvent, ResearchSpec, SourceView
 from traceweave.planner import Planner
@@ -30,6 +31,7 @@ from traceweave.skills import SkillRegistry
 from traceweave.sources.manager import SpecialistManager
 from traceweave.storage import Storage
 from traceweave.utils import lexical_overlap, metadata_published_at
+from traceweave.verification import ClaimVerifier
 
 ProgressCallback = Callable[[ProgressEvent], Awaitable[None] | None]
 
@@ -79,6 +81,8 @@ class ResearchEngine:
         self.analyzer = EvidenceAnalyzer(storage, provider)
         self.specialists = SpecialistManager(settings, storage, self.fetcher)
         self.graph = GraphCurator(storage, provider)
+        self.identity = IdentityResolver(storage, provider)
+        self.verifier = ClaimVerifier(storage, provider)
         self.skills = SkillRegistry()
         self.interpreter = PromptInterpreter(provider)
         self._fetch_sem = asyncio.Semaphore(settings.fetch_concurrency)
@@ -263,9 +267,7 @@ class ResearchEngine:
             async with branch_sem:
                 await self._search_query(run_id, spec, round_no, query)
 
-        await asyncio.gather(
-            *(search_branch(query) for query in pending_queries)
-        )
+        await asyncio.gather(*(search_branch(query) for query in pending_queries))
 
         # Stage 4: specialist sources are independent from generic search and may fail without killing the run.
         specialist = await self.specialists.discover(run_id, spec, plan, round_no)
@@ -321,6 +323,21 @@ class ResearchEngine:
                 round=round_no,
             )
 
+        verification = await self.verifier.assess(run_id, spec)
+        if verification:
+            await self._emit(
+                run_id,
+                "claims.verified",
+                "Claim assessment: "
+                + ", ".join(f"{key}={value}" for key, value in sorted(verification.items())),
+                verdicts=verification,
+                round=round_no,
+            )
+
+        identity = await self.identity.resolve(run_id, spec)
+        if identity["identity_hypotheses"] or identity["media_matches"]:
+            await self._emit(run_id, "identity.assessed", "Identity candidates were assessed", **identity)
+
         coverage = self._research_state(run_id)
         await self._emit(
             run_id,
@@ -337,6 +354,7 @@ class ResearchEngine:
         if not queries:
             queries = list(dict.fromkeys(source.search_query for source in sources if source.search_query))
         claims = self.storage.claims_for_run(run_id, 5000)
+        assessments = self.storage.claim_assessments_for_run(run_id, 5000)
         media_leads = self.storage.media_leads_for_run(run_id, 5000)
         source_categories: dict[str, int] = {}
         for source in sources:
@@ -376,30 +394,28 @@ class ResearchEngine:
             "has_english_bridge_query": any(any("a" <= c.casefold() <= "z" for c in q) for q in queries),
             "has_non_latin_query": any(any(ord(c) > 127 for c in q) for q in queries),
             "verified_claims": sum(bool(claim.get("verified_span")) for claim in claims),
+            "claim_verdicts": {
+                verdict: sum(1 for item in assessments if item["verdict"] == verdict)
+                for verdict in ("corroborated", "single_source", "contested", "insufficient")
+            },
+            "identity_hypotheses": len(self.storage.identity_hypotheses_for_run(run_id, 5000)),
+            "media_matches": len(self.storage.artifact_matches_for_run(run_id, 5000)),
             "unfetched_sources": sum(not source.fetched for source in sources),
             "coverage_gaps": gaps,
         }
 
     def _reportable_observations(self, run_id: str, limit: int = 80) -> list[dict]:
         """Keep raw observations stored while excluding known-irrelevant metadata from reports."""
-        sources = {source.id: source for source in self.storage.sources_for_run(run_id, 5000)}
         reportable: list[dict] = []
         for observation in self.storage.observations_for_run(run_id, limit):
             if str(observation.get("sensitivity") or "public") != "public":
                 continue
             kind = str(observation.get("kind") or "unknown")
-            source = sources.get(observation.get("source_id"))
-            metadata_kind = kind in {"page_metadata", "metadata"} or kind.startswith("metadata:")
-            if (
-                metadata_kind
-                and source is not None
-                and source.relevance == 0
-                and source.importance == 0
-            ):
+            metadata_kind = kind in {"page_metadata", "metadata", "metadata:page"}
+            if metadata_kind:
                 continue
             reportable.append(observation)
         return reportable
-
 
     def _agent_observation_capsules(self, run_id: str) -> list[dict[str, object]]:
         capsules: list[dict[str, object]] = []
@@ -960,9 +976,7 @@ class ResearchEngine:
                         run_id, source.id, str(snapshot["simhash"]), max_distance=3
                     )
                     family_key = (
-                        f"source:{duplicate_of}"
-                        if duplicate_of
-                        else f"sim:{str(snapshot['simhash'])[:12]}"
+                        f"source:{duplicate_of}" if duplicate_of else f"sim:{str(snapshot['simhash'])[:12]}"
                     )
                 result = await self.analyzer.triage(run_id, spec, source_for_model, sources)
                 if duplicate_of:
@@ -1070,6 +1084,9 @@ class ResearchEngine:
     async def _synthesize(self, run_id: str, spec: ResearchSpec) -> str:
         sources = self.storage.sources_for_run(run_id, limit=100)
         claims = self.storage.claims_for_run(run_id, limit=120)
+        assessments = {
+            int(item["claim_id"]): item for item in self.storage.claim_assessments_for_run(run_id, limit=200)
+        }
         if not sources:
             return "No sources were discovered. Check the search backend and retry."
         if self.provider is None:
@@ -1083,73 +1100,41 @@ class ResearchEngine:
             "research": {"topic": spec.topic, "angle": spec.angle, "mode": spec.mode},
             "coverage": self._research_state(run_id),
             "observation_capsules": self._agent_observation_capsules(run_id),
-            "sources": [
-                {
-                    "id": s.id,
-                    "title": s.title,
-                    "url": s.url,
-                    "domain": s.domain,
-                    "category": s.category,
-                    "engine": s.engine,
-                    "published_at": s.published_at,
-                    "relevance": s.relevance,
-                    "importance": s.importance,
-                    "novelty": s.novelty,
-                    "authority": s.authority,
-                    "duplicate_of": s.duplicate_of,
-                    "snippet": s.snippet[:500],
-                    "excerpt": s.text_excerpt[:700],
-                }
-                for s in sources[:70]
-            ],
             "grounded_claims": [
                 {
+                    "claim_id": c["id"],
                     "claim": c["claim_text"],
                     "source_id": c["source_id"],
+                    "source_domain": c.get("domain"),
                     "confidence": c["confidence"],
                     "observed_at": c.get("observed_at"),
                     "importance": c.get("importance"),
                     "rarity": c.get("rarity"),
                     "quote": c.get("quote", "")[:500],
                     "verified_span": bool(c.get("verified_span")),
+                    "assessment": assessments.get(int(c["id"]), {}),
                 }
                 for c in claims[:100]
             ],
-            "historical_captures": [
-                {
-                    "source_id": a["source_id"],
-                    "engine": a["engine"],
-                    "captured_at": a["captured_at"],
-                    "capture_url": a["capture_url"],
-                }
-                for a in self.storage.archive_captures_for_run(run_id, 80)
-            ],
-            "citation_leads": [
-                {"source_id": c["source_id"], "kind": c["kind"], "target_url": c["target_url"]}
-                for c in self.storage.citations_for_run(run_id, 80)
-            ],
-            "entities": [
-                {
-                    "id": e["id"],
-                    "name": e["canonical_name"],
-                    "type": e["entity_type"],
-                    "confidence": e["confidence"],
-                }
-                for e in self.storage.entities_for_run(run_id, 100)
-            ],
-            "relationships": self.storage.relationships_for_run(run_id, 120),
-            "timeline": self.storage.timeline_for_run(run_id, 120),
         }
         from importlib.resources import files
 
         system = files("traceweave.prompts").joinpath("synthesis.txt").read_text(encoding="utf-8")
         system += "\n\n" + self.skills.for_task("synthesis")
         try:
-            summary = await self.provider.text(
+            organization = await self.provider.json(
                 system=system, user=json.dumps(payload, ensure_ascii=False), task="synthesis", run_id=run_id
             )
+            summary = self._render_grounded_synthesis(
+                run_id,
+                spec,
+                claims,
+                assessments,
+                payload["observation_capsules"],
+                organization,
+            )
             return summary + self._local_evidence_appendix(run_id)
-        except LLMError as exc:
+        except (LLMError, ValueError, TypeError) as exc:
             await self._emit(run_id, "synthesis.failed", f"LLM synthesis unavailable: {exc}")
             summary = self._fallback_summary(
                 sources,
@@ -1157,6 +1142,159 @@ class ResearchEngine:
                 reason=f"Generative synthesis was unavailable ({exc}); evidence state remains saved.",
             )
             return summary + self._local_evidence_appendix(run_id)
+
+    def _render_grounded_synthesis(
+        self,
+        run_id: str,
+        spec: ResearchSpec,
+        claims: list[dict],
+        assessments: dict[int, dict],
+        observations: list[dict[str, object]],
+        organization: dict,
+    ) -> str:
+        """Render facts from persisted records; the model controls grouping only."""
+        by_claim = {int(claim["id"]): claim for claim in claims}
+        by_observation = {int(item["id"]): item for item in observations}
+
+        def ids(values: object, allowed: dict[int, object]) -> list[int]:
+            if not isinstance(values, list):
+                return []
+            result: list[int] = []
+            for value in values:
+                try:
+                    item_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if item_id in allowed and item_id not in result:
+                    result.append(item_id)
+            return result
+
+        def heading(value: object, fallback: str) -> str:
+            text = " ".join(str(value or "").split())[:90]
+            if not text or "http" in text.casefold() or "[s" in text.casefold():
+                return fallback
+            return text
+
+        verdict_counts = {
+            verdict: sum(1 for item in assessments.values() if item.get("verdict") == verdict)
+            for verdict in ("corroborated", "single_source", "contested", "insufficient")
+        }
+        lines = [
+            f"# Evidence-grounded report — {spec.topic}",
+            "",
+            "## Scope and evidence state",
+            "",
+            f"- Grounded literal-span claims: {len(claims)}",
+            f"- Independently corroborated: {verdict_counts['corroborated']}",
+            f"- Single-source: {verdict_counts['single_source']}",
+            f"- Contested: {verdict_counts['contested']}",
+            f"- Insufficient/unassessed: {verdict_counts['insufficient']}",
+            "",
+            "Only a `corroborated` verdict means independent-domain corroboration. "
+            "Official-source claims can still be single-source.",
+            "",
+            "## Findings organized by the lead agent",
+        ]
+        used_claims: set[int] = set()
+        groups = organization.get("finding_groups", [])
+        if not isinstance(groups, list):
+            groups = []
+        for index, group in enumerate(groups[:16], 1):
+            if not isinstance(group, dict):
+                continue
+            group_ids = ids(group.get("claim_ids"), by_claim)
+            if not group_ids:
+                continue
+            lines.extend(("", f"### {heading(group.get('heading'), f'Finding group {index}')}", ""))
+            for claim_id in group_ids:
+                used_claims.add(claim_id)
+                self._append_grounded_claim(lines, by_claim[claim_id], assessments.get(claim_id, {}))
+        remaining = [claim_id for claim_id in by_claim if claim_id not in used_claims]
+        if remaining:
+            lines.extend(("", "### Remaining grounded claims", ""))
+            for claim_id in remaining:
+                self._append_grounded_claim(lines, by_claim[claim_id], assessments.get(claim_id, {}))
+        if not claims:
+            lines.extend(
+                ("", "No literal-grounded claim passed extraction; source records remain leads only.")
+            )
+
+        used_observations: set[int] = set()
+        observation_groups = organization.get("observation_groups", [])
+        if not isinstance(observation_groups, list):
+            observation_groups = []
+        for index, group in enumerate(observation_groups[:12], 1):
+            if not isinstance(group, dict):
+                continue
+            group_ids = ids(group.get("observation_ids"), by_observation)
+            if not group_ids:
+                continue
+            if not used_observations:
+                lines.extend(("", "## Public observation leads"))
+            lines.extend(("", f"### {heading(group.get('heading'), f'Observation group {index}')}", ""))
+            for observation_id in group_ids:
+                used_observations.add(observation_id)
+                item = by_observation[observation_id]
+                source_id = item.get("source_id") or "?"
+                locator = json.dumps(item.get("locator") or {}, ensure_ascii=False)
+                lines.append(
+                    f"- O{observation_id} [S{source_id}] `{item.get('kind')}`: "
+                    f"{item.get('text') or ''} (confidence={item.get('confidence')}, locator={locator})"
+                )
+        if used_observations:
+            lines.extend(
+                (
+                    "",
+                    "Observation leads describe visible/OCR/metadata records; they are not identity proof or corroborated facts.",
+                )
+            )
+
+        lines.extend(("", "## Reviewable identity and media hypotheses", ""))
+        hypotheses = self.storage.identity_hypotheses_for_run(run_id, 80)
+        matches = self.storage.artifact_matches_for_run(run_id, 80)
+        if not hypotheses and not matches:
+            lines.append("- No identity or media-match hypothesis was produced.")
+        for item in hypotheses:
+            evidence = ", ".join(f"C{value}" for value in item["evidence_claim_ids"]) or "none"
+            lines.append(
+                f"- E{item['left_entity_id']}↔E{item['right_entity_id']}: {item['verdict']} "
+                f"(confidence={float(item['confidence']):.2f}; evidence={evidence})."
+            )
+        for item in matches:
+            lines.append(
+                f"- {item['left_artifact_id']}↔{item['right_artifact_id']}: {item['verdict']} "
+                f"(perceptual distance={float(item['distance']):.0f}); this is not face identification."
+            )
+
+        questions = organization.get("unresolved_questions", [])
+        coverage_gaps = self._research_state(run_id).get("coverage_gaps", [])
+        lines.extend(("", "## Unresolved questions and coverage gaps", ""))
+        for gap in coverage_gaps if isinstance(coverage_gaps, list) else []:
+            lines.append(f"- Coverage gap: {str(gap)[:300]}")
+        if isinstance(questions, list):
+            for value in questions[:12]:
+                question = " ".join(str(value).split())[:400].rstrip(". ?")
+                if question:
+                    lines.append(f"- Review question: {question}?")
+        if len(lines) and not coverage_gaps and not questions:
+            lines.append("- No additional gap was proposed; this does not imply completeness.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _append_grounded_claim(lines: list[str], claim: dict, assessment: dict) -> None:
+        verdict = str(assessment.get("verdict") or "unassessed")
+        confidence = float(assessment.get("confidence") or claim.get("confidence") or 0)
+        lines.append(
+            f"- **C{claim['id']} — {verdict}** [S{claim['source_id']}] {claim['claim_text']} "
+            f"(confidence={confidence:.2f})"
+        )
+        quote = " ".join(str(claim.get("quote") or "").split())[:700]
+        if quote:
+            lines.append(f"  - Literal evidence: “{quote}”")
+        if claim.get("observed_at"):
+            lines.append(f"  - Observed at: {claim['observed_at']}")
+        if assessment.get("rationale"):
+            lines.append(f"  - Assessment: {str(assessment['rationale'])[:500]}")
 
     def _local_evidence_appendix(self, run_id: str) -> str:
         observations = self._reportable_observations(run_id, 80)
@@ -1170,9 +1308,7 @@ class ResearchEngine:
                 source = f"S{observation['source_id']}" if observation.get("source_id") else "S?"
                 artifact = str(observation.get("artifact_id") or "no-artifact")
                 text = " ".join(str(observation.get("value_text") or "").split())[:240]
-                lines.append(
-                    f"- [{source}] {observation['kind']} ({artifact}): {text}"
-                )
+                lines.append(f"- [{source}] {observation['kind']} ({artifact}): {text}")
         if edges:
             lines.extend(("", "### Discovery/provenance paths", f"Stored graph edges: {len(edges)}."))
             lines.append("Full observations and paths remain in findings.json and graph exports.")

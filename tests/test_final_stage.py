@@ -32,9 +32,7 @@ def test_unqualified_prompt_defaults_to_deep() -> None:
     assert spec.language == "fa"
 
 
-def test_preferred_model_route_retains_auto_fallback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_preferred_model_route_retains_auto_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "providers.toml"
     config.write_text(
         """
@@ -188,6 +186,7 @@ async def test_slash_palette_opens_and_click_executes_help(
         assert bool(app.query_one("#workspace").display)
         assert launch.value == ""
 
+
 @pytest.mark.asyncio
 async def test_deep_planner_runs_parallel_specialist_branches() -> None:
     class BranchProvider:
@@ -321,9 +320,18 @@ async def test_synthesis_provider_receives_public_observation_capsules(tmp_path:
         def __init__(self) -> None:
             self.payload: dict | None = None
 
-        async def text(self, **kwargs):
+        async def json(self, **kwargs):
             self.payload = json.loads(kwargs["user"])
-            return "# Evidence brief\n\nProject Lantern is an uncorroborated visual lead."
+            return {
+                "finding_groups": [],
+                "observation_groups": [
+                    {
+                        "heading": "Visual leads",
+                        "observation_ids": [self.payload["observation_capsules"][0]["id"]],
+                    }
+                ],
+                "unresolved_questions": ["Can the visible text be corroborated"],
+            }
 
     provider = CaptureProvider()
     engine, storage, run_id, source_id = _observation_engine(tmp_path, provider)
@@ -340,10 +348,13 @@ async def test_synthesis_provider_receives_public_observation_capsules(tmp_path:
 
     report = await engine._synthesize(run_id, ResearchSpec(topic="Example Robotics", mode="deep"))
     assert provider.payload is not None
+    assert "source_leads" not in provider.payload
+    assert "sources" not in provider.payload
     capsule = provider.payload["observation_capsules"][0]
     assert capsule["text"] == "Project Lantern"
     assert capsule["locator"] == {"frame": 3}
-    assert "uncorroborated visual lead" in report
+    assert "Project Lantern" in report
+    assert "not identity proof or corroborated facts" in report
 
 
 def test_cached_search_rejects_year_only_cross_topic_matches(tmp_path: Path) -> None:

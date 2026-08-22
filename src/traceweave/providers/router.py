@@ -83,6 +83,7 @@ class ModelRouter:
             "traceweave_router_task", default="general"
         )
         self._preferred_deployment: str | None = None
+        self._inflight: dict[str, int] = {}
 
     def _build_deployments(self) -> list[Deployment]:
         cfg = load_provider_config(self.settings)
@@ -131,18 +132,19 @@ class ModelRouter:
         return len(self.deployments)
 
     async def json(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> dict:
-        self._check_run_budget(run_id)
+        self._check_run_budget(run_id, task=task)
         await self._ensure_for_call(run_id)
         errors: list[str] = []
         tried: set[str] = set()
         for _ in range(self._task_attempts(task)):
-            self._check_run_budget(run_id)
+            self._check_run_budget(run_id, task=task)
             candidate = self._pick(task, exclude=tried)
             if candidate is None:
                 break
             dep = candidate.deployment
             tried.add(dep.deployment_key)
             started = time.monotonic()
+            self._acquire_route(dep)
             try:
                 task_token = self._task_context.set(task)
                 try:
@@ -165,24 +167,27 @@ class ModelRouter:
                 self._record_failure(dep, task, exc, latency=latency, run_id=run_id)
                 errors.append(f"{dep.deployment_key}: {exc.kind}: {exc}")
                 continue
+            finally:
+                self._release_route(dep)
             latency = time.monotonic() - started
             self._record_success(dep, task, latency=latency, run_id=run_id, response=response)
             return parsed
         raise LLMError("No healthy deployment completed the JSON task. " + " | ".join(errors[-4:]))
 
     async def text(self, *, system: str, user: str, task: str = "general", run_id: str | None = None) -> str:
-        self._check_run_budget(run_id)
+        self._check_run_budget(run_id, task=task)
         await self._ensure_for_call(run_id)
         errors: list[str] = []
         tried: set[str] = set()
         for _ in range(self._task_attempts(task)):
-            self._check_run_budget(run_id)
+            self._check_run_budget(run_id, task=task)
             candidate = self._pick(task, exclude=tried)
             if candidate is None:
                 break
             dep = candidate.deployment
             tried.add(dep.deployment_key)
             started = time.monotonic()
+            self._acquire_route(dep)
             try:
                 task_token = self._task_context.set(task)
                 try:
@@ -201,6 +206,8 @@ class ModelRouter:
                 self._record_failure(dep, task, exc, latency=latency, run_id=run_id)
                 errors.append(f"{dep.deployment_key}: {exc.kind}: {exc}")
                 continue
+            finally:
+                self._release_route(dep)
             latency = time.monotonic() - started
             self._record_success(dep, task, latency=latency, run_id=run_id, response=response)
             return text
@@ -461,7 +468,12 @@ class ModelRouter:
             latency = float(model_stats.get("latency_ema") or 0)
             # Lower is better. Priority is explicit; health and latency only break/adjust it rather than overriding intent.
             preference = -10_000 if dep.deployment_key == self._preferred_deployment else 0
-            score = (dep.priority + failure_ratio * 35 + min(latency, 20) * 1.5 + preference) / dep.weight
+            # Concurrent triage/claim calls must not stampede one slow or failing route.
+            # A preferred route wins the first lease, then healthy fallbacks can make progress.
+            inflight_penalty = self._inflight.get(dep.deployment_key, 0) * 20_000
+            score = (
+                dep.priority + failure_ratio * 35 + min(latency, 20) * 1.5 + preference + inflight_penalty
+            ) / dep.weight
             candidates.append(CandidateView(dep, score, cred_cd, dep_cd, task_cd))
         if not candidates:
             return None
@@ -664,15 +676,49 @@ class ModelRouter:
         self._preferred_deployment = deployment_key
         return True
 
-    def _check_run_budget(self, run_id: str | None, *, vision: bool = False) -> None:
+    def _acquire_route(self, dep: Deployment) -> None:
+        self._inflight[dep.deployment_key] = self._inflight.get(dep.deployment_key, 0) + 1
+
+    def _release_route(self, dep: Deployment) -> None:
+        remaining = self._inflight.get(dep.deployment_key, 1) - 1
+        if remaining > 0:
+            self._inflight[dep.deployment_key] = remaining
+        else:
+            self._inflight.pop(dep.deployment_key, None)
+
+    def _check_run_budget(
+        self,
+        run_id: str | None,
+        *,
+        task: str = "general",
+        vision: bool = False,
+    ) -> None:
         if not run_id:
             return
         run = self.storage.get_run(run_id)
         if not run:
             return
         maximum = int(run.get("max_model_calls") or 0)
-        if maximum >= 0 and self.storage.router_attempt_count(run_id) >= maximum:
+        used = self.storage.router_attempt_count(run_id)
+        if maximum >= 0 and used >= maximum:
             raise LLMError(f"Model-call budget exhausted ({maximum})")
+        # Keep bounded runs useful under provider outages. Early planning/triage may use most
+        # of the budget, but cannot consume the attempts reserved for grounded claims and a
+        # final synthesis. Very small explicit budgets retain the original hard-cap semantics.
+        if maximum >= 8 and not vision:
+            final_reserve = min(10, max(2, maximum // 4))
+            reserve = (
+                0
+                if task == "synthesis"
+                else 2
+                if task in {"claim_extraction", "verification"}
+                else final_reserve
+            )
+            if used >= maximum - reserve:
+                raise LLMError(
+                    f"Model-call stage budget exhausted for {task}; {reserve} of {maximum} attempts "
+                    "are reserved for grounded claims/final synthesis"
+                )
         if vision:
             if not self.settings.remote_vision_enabled or not bool(run.get("allow_remote_vision")):
                 raise LLMError("Remote vision is disabled by policy or for this run")
@@ -688,4 +734,3 @@ def _looks_like_refusal(text: str) -> bool:
 
 def _as_response(value: ProviderResponse | str) -> ProviderResponse:
     return value if isinstance(value, ProviderResponse) else ProviderResponse(text=str(value))
-

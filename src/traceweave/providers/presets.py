@@ -28,11 +28,47 @@ class ProviderPreset:
     headers: dict[str, str] = field(default_factory=dict)
     warning: str = ""
     free_tier: bool = False
+    paid_only: bool = False
 
 
 # Curated fallbacks are intentionally small. Dynamic model discovery augments these where safe.
 # The routing task names are TraceWeave task classes, not provider-native tool calls.
 PRESETS: dict[str, ProviderPreset] = {
+    "openai": ProviderPreset(
+        id="openai",
+        base_url="https://api.openai.com/v1",
+        env_prefix="OPENAI",
+        dynamic_catalog=True,
+        paid_only=True,
+    ),
+    "deepseek": ProviderPreset(
+        id="deepseek",
+        base_url="https://api.deepseek.com",
+        env_prefix="DEEPSEEK",
+        dynamic_catalog=True,
+        paid_only=True,
+    ),
+    "xai": ProviderPreset(
+        id="xai",
+        base_url="https://api.x.ai/v1",
+        env_prefix="XAI",
+        dynamic_catalog=True,
+        paid_only=True,
+    ),
+    "together": ProviderPreset(
+        id="together",
+        base_url="https://api.together.ai/v1",
+        env_prefix="TOGETHER",
+        dynamic_catalog=True,
+        paid_only=True,
+    ),
+    "fireworks": ProviderPreset(
+        id="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+        env_prefix="FIREWORKS",
+        dynamic_catalog=True,
+        paid_only=True,
+    ),
     "agentrouter": ProviderPreset(
         id="agentrouter",
         base_url="https://co.agentrouter.org/v1",
@@ -346,7 +382,11 @@ def providers_from_env(
                             priority=priority,
                             extra={
                                 "tier": tier,
-                                "free": bool(item.get("is_free")) or preset.free_tier,
+                                "free": (
+                                    False
+                                    if preset.paid_only
+                                    else (True if preset.free_tier else item.get("is_free"))
+                                ),
                                 "discovered": True,
                             },
                         )

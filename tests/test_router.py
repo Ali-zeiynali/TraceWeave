@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC
 from pathlib import Path
@@ -284,3 +285,89 @@ priority=5
         await router.json(system="s", user="u", task="planning", run_id=run_id)
     assert len(called) == 1
     assert router.storage.router_attempt_count(run_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_calls_distribute_inflight_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _router(
+        tmp_path,
+        monkeypatch,
+        """
+[[providers]]
+id="p"
+driver="openai_compat"
+base_url="https://example.invalid/v1"
+[[providers.credentials]]
+id="a"
+token_env="KEY_A"
+[[providers.credentials]]
+id="b"
+token_env="KEY_B"
+[[providers.models]]
+id="m"
+name="model"
+tasks=["triage"]
+priority=5
+""",
+    )
+    both_started = asyncio.Event()
+    started: list[str] = []
+
+    async def delayed_success(dep, *, system, user):
+        del system, user
+        started.append(dep.credential_id)
+        if len(started) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        return '{"relevance":80}'
+
+    monkeypatch.setattr(router, "_call", delayed_success)
+    await asyncio.gather(
+        router.json(system="s", user="u1", task="triage"),
+        router.json(system="s", user="u2", task="triage"),
+    )
+    assert set(started) == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_stage_budget_reserves_claim_and_synthesis_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _router(
+        tmp_path,
+        monkeypatch,
+        """
+[[providers]]
+id="p"
+driver="openai_compat"
+base_url="https://example.invalid/v1"
+[[providers.credentials]]
+id="a"
+token_env="KEY_A"
+[[providers.models]]
+id="m"
+name="model"
+tasks=["triage","claim_extraction","synthesis"]
+priority=5
+""",
+    )
+    run_id = router.storage.create_run(ResearchSpec(topic="Reserved budget", max_model_calls=12))
+
+    async def success(dep, *, system, user):
+        del dep, system, user
+        return '{"ok":true}'
+
+    monkeypatch.setattr(router, "_call", success)
+    for _ in range(9):
+        await router.json(system="s", user="u", task="triage", run_id=run_id)
+    with pytest.raises(LLMError, match="reserved"):
+        await router.json(system="s", user="u", task="triage", run_id=run_id)
+    await router.json(system="s", user="u", task="claim_extraction", run_id=run_id)
+    with pytest.raises(LLMError, match="reserved"):
+        await router.json(system="s", user="u", task="claim_extraction", run_id=run_id)
+    assert await router.text(system="s", user="u", task="synthesis", run_id=run_id) == '{"ok":true}'
+    assert await router.text(system="s", user="u", task="synthesis", run_id=run_id) == '{"ok":true}'
+    with pytest.raises(LLMError, match="Model-call budget exhausted"):
+        await router.text(system="s", user="u", task="synthesis", run_id=run_id)

@@ -1,0 +1,10 @@
+# Copy to .traceweave/mcp.toml. TraceWeave accepts HTTPS endpoints and loopback HTTP only.
+# Tool execution is allowlisted per server; listing tools never grants execution authority.
+
+[[servers]]
+name = "example-research"
+url = "https://mcp.example.com/mcp"
+enabled = false
+token_env = "EXAMPLE_MCP_TOKEN"
+read_only = true
+allowed_tools = ["search", "fetch_public_record"]

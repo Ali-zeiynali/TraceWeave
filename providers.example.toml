@@ -1,4 +1,4 @@
-# TraceWeave v0.5 provider overrides
+# TraceWeave v1.0.2 provider overrides
 # -----------------------------------
 # Normally you DO NOT need this file. Built-in presets activate automatically from .env:
 #   GROQ_API_KEY / GROQ_API_KEY_2 / GROQ_API_KEY_3

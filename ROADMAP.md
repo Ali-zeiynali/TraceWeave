@@ -1,76 +1,37 @@
-# TraceWeave Roadmap
+# TraceWeave roadmap
 
-## v0.1 — Research Core ✅
-TUI/CLI, iterative plan/search/re-plan, source provenance, snapshots, SQLite, resume, exports.
+This roadmap records shipped work separately from future work. A capability is marked delivered only when it has a typed implementation, provenance, tests, and user documentation.
 
-## v0.2 — Evidence & Triage ✅
-Relevance/importance/novelty/authority, literal-quote grounded claims, near-duplicate detection, source families foundation.
+## Stage 1 — trustworthy research core (v1.0.2, delivered)
 
-## v0.3 — Deep Traversal & Provider Mesh ✅
-Best-first frontier, sitemap/feed discovery, optional browser fallback, sessions, task-aware multi-token routing, dynamic cooldown, provider health.
+- Prompt-first intent parsing, iterative planning, bounded replanning, and a lead-agent reconciliation pass.
+- Quick, Standard, Deep, and Overnight budgets with persistent deadlines, resumable leased tasks, and provider failover.
+- Literal-quote claims, snapshots, citations, source scoring, contradiction-aware synthesis, and independent-domain claim assessments.
+- Task-aware model routing across free-tier presets and opt-in paid OpenAI-compatible providers.
+- SQLite case state, JSON/Markdown/evidence-matrix/Mermaid/GraphML exports, and reproducible run workspaces.
 
-## v0.4 — Archives & Specialist Sources ✅ (delivered in v0.5 patch)
-Wayback, Common Crawl, OpenAlex, Crossref, arXiv, public GitHub, PDF parsing, citation snowballing, specialist resume state.
+## Stage 2 — OSINT depth and analyst precision (v1.0.2, delivered)
 
-## v0.5 — Graph Foundation ✅
-Claim-grounded entities/relationships, timeline, research edges, credential-scoped model catalogs, zero-config built-in provider presets, redesigned minimal TUI landing.
+- Passive DNS (A/AAAA/CNAME/MX/NS/TXT/CAA/SOA), RDAP, Certificate Transparency, RIPEstat, PeeringDB, GLEIF, ROR, ORCID, SEC company index, Companies House, and urlscan search.
+- Public web, archives, publications, code, news, social-index leads, media collection, OCR, metadata, perceptual-image matching, and optional bounded remote vision.
+- Four specialist research branches with lead-agent plan reconciliation and evidence-aware synthesis.
+- Conservative person-resolution hypotheses that require grounded evidence from independent domains; image hashes identify duplicate artifacts, not people.
+- Agent Skills discovery from `.agents`, `.opencode`, and `.claude`, plus existing TraceWeave project skills.
+- MCP 2025-11-25 Streamable HTTP discovery and explicitly allowlisted calls. MCP tools are not granted autonomous authority.
+- A capability catalog that labels unimplemented local/third-party tools as `catalog-only` instead of pretending they are integrated.
 
-## v0.5 hardening increment ✅
-- SQLite connections are transactionally closed; Windows smoke cleanup is reliable
-- persistent run deadlines/model budgets and leased idempotent round tasks
-- Quick/Standard/Deep/Overnight modes
-- content-addressed public media and region-level observations
-- opt-in remote vision with a separate budget and refusal/evasion-aware routing
-- GLEIF/ROR/ORCID/RDAP/DNS/RIPEstat, Bluesky and optional official Telegram discovery
-- Cerebras, SambaNova, Cloudflare Workers AI, NVIDIA text/vision, NaraRouter and AIGate presets
-- five token slots per provider, three Cloudflare account pairs, usage/token dashboard and provider network circuits
-- prompt-first multilingual intent parsing, no-key GDELT/MediaWiki/Hacker News fallbacks and cached public-result fallback
-- project skill hot-loading plus web-content firewall and verification skills
-- simplified borderless workspace pane, incremental score updates, JSON/Mermaid/GraphML exports
-- live-report TUI, quote-line prompt, clickable slash palette, model preference switcher and session token/activity display
-- self-contained case workspaces with report/findings/evidence/graph files plus important-media folder
-- four-way parallel specialist planning for Deep/Overnight and bounded concurrent query branches
-- source/language/media/graph coverage audit persisted after every round
-- local ExifTool/Tesseract/ImageHash/OpenCV media observations and company/person/media/infrastructure/multilingual/orchestration skills
+## Stage 3 — public product and operations (v1.0.2, delivered)
 
-## v0.6 — Source Intelligence
-- source-family / syndication clustering
-- stronger entity resolution and aliases
-- source independence score
-- contradiction hunter and verification queue
-- archive diff / website-change extraction
-- citation resolution from citation → fetched target source
-- migrate ad-hoc `_ensure_column` upgrades into fully numbered forward-only migration files
-- granular durable tasks for every search/fetch/analyze operation (round tasks are durable today)
+- Simplified full-screen onboarding, vertically corrected input fields, live report/evidence/graph/timeline/verification/identity views, and operational slash commands.
+- CLI inspection for providers, sources, toolbox, skills, MCP, verification, identity, exports, resume, and diagnostics.
+- Public-use defaults: passive collection, SSRF protections, robots handling, prompt-injection boundary, no CAPTCHA bypass, no credential testing, and no arbitrary model-composed shell.
+- Release documentation, environment examples, migration-safe schema creation, quality gates, and an end-to-end evaluation harness.
 
-## v0.7 — Long Memory & Skills
-- compact branch notebooks
-- evidence-aware context builder
-- skill registry metadata / progressive loading improvements (project hot-loading is delivered; version/signature policy remains)
-- branch notebooks and convergence scoring built on the delivered coverage audit
-- branch saturation/convergence scoring
+## Post-1.0 backlog
 
-## v0.8 — Public OSINT Specialists
-- SEC/Companies House/PeeringDB/urlscan typed adapters and Certificate Transparency history
-- richer remote OCR/document tiling for public organizational material
-- repository history/commit/release adapters
-- typed passive CLI runners for Sherlock/Maigret/Amass/Subfinder/ExifTool/ffprobe (catalog exists; raw autonomous shell does not)
-- public Mastodon adapter and operator-owned LinkedIn export importer
-- typed allowlisted MCP source adapters; no arbitrary MCP tool execution or mutation authority
-
-## v0.9 — QA / Observability
-- citation auditor
-- source independence auditor
-- Hidden Breadcrumb research benchmark
-- repeatable public `traceweave ask` benchmark artifacts and report-quality scoring (harness delivered; corpus expansion remains)
-- provider-chaos tests / 429 storms / partial outage tests
-- long-run crash/restart/resume benchmark
-- OpenTelemetry-compatible traces and richer TUI diagnostics
-
-## v1.0 — Research OS
-- stable plugin/source/skill interfaces
-- Quick / Standard / Deep / Overnight modes
-- graph/timeline/evidence views in the TUI
-- robust migrations and packaging
-- multi-node worker option without making it mandatory for single-VPS users
-- evidence-grounded final reports with explicit unresolved gaps and provenance
+- Numbered forward-only migration files replacing compatibility `_ensure_column` upgrades.
+- Source-family/syndication clustering, archive diffs, stronger temporal reasoning, and explicit citation-to-target resolution.
+- Durable per-fetch/per-analysis work units for distributed workers; a single-node install remains the default.
+- OpenTelemetry-compatible traces, provider-chaos tests, crash/restart endurance runs, and a larger frozen public benchmark corpus.
+- Typed adapters for selected catalog-only CLIs and operator-owned LinkedIn data exports, after contract and provenance tests exist.
+- Optional standards-compliant MCP stdio bridge without exposing arbitrary subprocess execution to fetched content or models.

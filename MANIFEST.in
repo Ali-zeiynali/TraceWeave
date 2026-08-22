@@ -1,0 +1,14 @@
+include LICENSE
+include README.md
+include ARCHITECTURE.md
+include CHANGELOG.md
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include ROADMAP.md
+include SECURITY.md
+include USAGE.md
+include .env.example
+include providers.example.toml
+include mcp.example.toml
+recursive-include docs *.md
+recursive-include scripts *.py

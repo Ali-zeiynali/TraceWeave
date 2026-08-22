@@ -1,4 +1,4 @@
-# TraceWeave v0.5 Architecture
+# TraceWeave v1.0.2 Architecture
 
 ## Design goal
 
@@ -54,7 +54,7 @@ source → snapshot → media_lead → content-addressed artifact → region obs
 
 ## 1. Durable state boundaries
 
-SQLite is the v0.5 durable state store. It holds:
+SQLite is the v1.0.2 durable state store. It holds:
 
 - runs and per-round plans
 - queries and their completion/error state
@@ -122,7 +122,7 @@ Specialist adapters return normalized `SpecialistResult` objects and then enter 
 OpenAlex, Crossref, and arXiv are searched independently. Failures in one source do not abort the others.
 
 ### GitHub
-Only public repository and issue search is used in v0.5. Authentication is optional and only increases normal public API capacity.
+Only public repository and issue search is used in v1.0.2. Authentication is optional and only increases normal public API capacity.
 
 ### Archives
 Wayback CDX finds time-separated captures. Common Crawl locates indexed WARC records and range-fetches selected captures. A capture has its own timestamp, engine, digest and source relationship.
@@ -191,5 +191,5 @@ Future stages can add adapters without changing the core evidence model:
 - GraphRAG/corpus community summaries
 - distributed workers/Redis/PostgreSQL when one-node SQLite becomes a bottleneck
 - richer TUI graph/timeline views
-- typed allowlisted MCP source adapters. Arbitrary MCP tools are not exposed to the model because a server may contain
+- typed allowlisted MCP discovery and invocation boundaries. Arbitrary MCP tools are not exposed to the model because a server may contain
   mutating, private-data or active-network capabilities.

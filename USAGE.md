@@ -1,4 +1,4 @@
-# TraceWeave v0.5 — Usage Guide
+# TraceWeave v1.0.2 — Usage Guide
 
 ## 1. Install
 
@@ -61,19 +61,26 @@ Modes provide defaults, but explicit `/rounds`, `/depth`, and `/budget` override
 /entities [RUN_ID]
 /timeline [RUN_ID]
 /graph [RUN_ID]
+/verification [RUN_ID]
+/identity [RUN_ID]
 /router
 ```
 
 CLI equivalents include:
 
 ```bash
+traceweave research "topic" --mode deep --rounds 3 --depth 2 --frontier-budget 50
+traceweave research "topic" --mode quick --rounds 1 --prefer-model provider:token-1:model
 traceweave runs
 traceweave show RUN_ID
 traceweave claims RUN_ID
 traceweave archives RUN_ID
 traceweave entities RUN_ID
 traceweave timeline RUN_ID
+traceweave verification RUN_ID
+traceweave identity RUN_ID
 traceweave router-log
+traceweave providers --task planning --json
 ```
 
 ## 5. Providers
@@ -162,7 +169,7 @@ For repeatable end-to-end checks, run `python scripts/benchmark_agent.py --help`
 prompt-first CLI and records latency, query-language coverage, citations, graph edges, observations, token usage,
 and provider failures without reading or printing key values.
 
-## 10. Stage 4 configuration
+## 10. Specialist-source configuration
 
 Useful `.env` knobs:
 
@@ -184,7 +191,16 @@ TRACEWEAVE_OPENALEX_MAILTO=
 
 For a small VPS, increase source budgets slowly. Browser rendering is the expensive part; ordinary HTTP, archive APIs, and academic APIs are much lighter.
 
-## 10. Troubleshooting
+## 11. MCP and Agent Skills
+
+Copy `mcp.example.toml` to `.traceweave/mcp.toml`, enable only servers you trust, and allowlist individual read-only tools.
+`traceweave mcp` performs protocol negotiation and lists exposed/allowed tools; listing does not grant execution authority.
+
+Project Agent Skills are discovered from `.agents/skills/*/SKILL.md`, `.opencode/skills/*/SKILL.md`, and
+`.claude/skills/*/SKILL.md`. To opt a compatible skill into automatic TraceWeave prompt assembly, add a frontmatter key
+such as `traceweave-tasks: planning, replanning, synthesis`; otherwise it remains visible but manual.
+
+## 12. Troubleshooting
 
 ### No model shown on landing
 Run `/providers sync` or `traceweave providers --sync`. A router with only dynamic models may display `deterministic / catalog discovery` until its first successful catalog sync.

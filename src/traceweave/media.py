@@ -73,7 +73,9 @@ async def analyze_media_locally(
                 code, output = await _run_tool(
                     [tesseract, "stdin", "stdout", "-l", "eng", "--psm", "11"], data
                 )
-            text = "\n".join(line.strip() for line in output.decode(errors="replace").splitlines() if line.strip())
+            text = "\n".join(
+                line.strip() for line in output.decode(errors="replace").splitlines() if line.strip()
+            )
             if code == 0 and text:
                 observations.append(
                     {
